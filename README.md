@@ -1,21 +1,22 @@
 # AbsintheRelayKeysetConnection
 
-**TODO: Add description**
+Support for paginated result sets using keyset pagination, for use in an
+Absinthe resolver module.
+Requires defining a connection with
+[Absinthe.Relay.Connection](https://hexdocs.pm/absinthe_relay/Absinthe.Relay.Connection.html).
 
 ## Installation
 
-If [available in Hex](https://hex.pm/docs/publish), the package can be installed
-by adding `absinthe_relay_keyset_connection` to your list of dependencies in `mix.exs`:
+Not currently on [HexDocs](https://hexdocs.pm), as I'm not sure whether this
+will remain an independent library or be folded into an existing one.
+
+The current package can be installed by adding
+`absinthe_relay_keyset_connection` to your list of dependencies in `mix.exs`:
 
 ```elixir
 def deps do
   [
-    {:absinthe_relay_keyset_connection, "~> 0.1.0"}
+    {:absinthe_relay_keyset_connection, git: "git@github.com:nathanl/absinthe_relay_keyset_connection.git"}
   ]
 end
 ```
-
-Documentation can be generated with [ExDoc](https://github.com/elixir-lang/ex_doc)
-and published on [HexDocs](https://hexdocs.pm). Once published, the docs can
-be found at [https://hexdocs.pm/absinthe_relay_keyset_connection](https://hexdocs.pm/absinthe_relay_keyset_connection).
-

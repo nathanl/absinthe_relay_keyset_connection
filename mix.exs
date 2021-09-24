@@ -8,8 +8,12 @@ defmodule AbsintheRelayKeysetConnection.MixProject do
       elixir: "~> 1.12",
       start_permanent: Mix.env() == :prod,
       elixirc_paths: elixirc_paths(Mix.env()),
+      elixirc_options: [
+        warnings_as_errors: true
+      ],
       aliases: aliases(),
-      deps: deps()
+      deps: deps(),
+      dialyzer: dialyzer()
     ]
   end
 
@@ -30,8 +34,9 @@ defmodule AbsintheRelayKeysetConnection.MixProject do
     [
       {:jason, "~> 1.2"},
       {:ecto_sql, "~> 3.7"},
+      {:ex_doc, "~> 0.25.2", only: :dev, runtime: false},
       {:postgrex, "~> 0.15", only: :test},
-      {:ex_doc, "~> 0.25.2", only: :dev, runtime: false}
+      {:dialyxir, "~> 1.0", only: [:dev], runtime: false}
     ]
   end
 
@@ -45,6 +50,14 @@ defmodule AbsintheRelayKeysetConnection.MixProject do
         "ecto.migrate --migrations-path test/support/priv/repo/migrations",
         "test"
       ]
+    ]
+  end
+
+  defp dialyzer do
+    [
+      ignore_warnings: ".dialyzer_ignore.exs",
+      list_unused_filters: true,
+      plt_add_apps: [:ex_unit, :mix]
     ]
   end
 end

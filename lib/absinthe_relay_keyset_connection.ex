@@ -1,23 +1,280 @@
 defmodule AbsintheRelayKeysetConnection do
   @moduledoc """
-  Support for paginated result sets using keyset pagination.
+  Support for paginated result sets using keyset pagination, for use in an
+  Absinthe resolver module.
+  Requires defining a connection with
+  [Absinthe.Relay.Connection](https://hexdocs.pm/absinthe_relay/Absinthe.Relay.Connection.html).
 
-  Specifically, `from_query/3` is keyset-paginated replacement for
-  `from_query/4` in `Absinthe.Relay.Connection`.
+  ## The TL;DR
 
-  For information about the connection model, see the [Relay Cursor Connections
-  Specification](https://relay.dev/graphql/connections.htm)
+  In a resolver...
+
+  ```elixir
+  AbsintheRelayKeysetConnection.from_query(
+    ecto_users_query,
+    &MyRepo.all/1,
+    %{
+      sorts: [%{name: :desc}, %{id: :desc}],
+      first: 10,
+      after: "0QTwn5SRWyJNbyIsMjZd"
+    },
+    %{unique_column: :id}
+  )
+  ```
+
+  ## More Details
+
+  ### Why keyset pagination?
+
+  By default,
+  [Absinthe.Relay.Connection](https://hexdocs.pm/absinthe_relay/Absinthe.Relay.Connection.html)
+  uses offset-based pagination.
+  For example, with a page size of 10, it would get the first page of records
+  with a SQL query like `OFFSET 0 LIMIT 10`, the second page with `OFFSET 10
+  LIMIT 10`, and so on.
+  This works well for many use cases and requires no knowledge of the
+  underlying database schema.
+  However, when the value of `OFFSET` is large, it [can cause poor database
+  performance](https://use-the-index-luke.com/no-offset).
+
+  Keyset pagination means that, in the example above, the first page might be
+  fetched with `WHERE id > 0 ORDER BY id ASC LIMIT 10`.
+  If the last record on that page had id `10`, the query for the next page could be
+  fetched with `WHERE id > 10 ORDER BY id ASC LIMIT 10`.
+  This `WHERE` clause lets the database efficiently ignore earlier records,
+  especially if the `id` column is indexed.
+
+  ### The cursor
+
+  With offset-based pagination, a user needs only to say "I want 10 records per
+  page, and give me page 3, please."
+  We can easily calculate the offset as `(page_number - 1) * limit`.
+
+  But for keyset-based pagination, we need more information.
+  To get the next page, we need to know which record appeared last on the page
+  the user just got; for example, if it was record 10, we will query `WHERE id
+  > 10`.
+  The user needs to supply this information using a "cursor".
+  In this simple case, the cursor need contain only the id.
+  (Typically this value is encoded in a way that makes it opaque to the user in
+  order to indicate that it's an implementation detail.)
+  But sorting and the need for uniqueness add some complexity to the picture.
+
+  ### Sorting and uniqueness
+
+  Keyset pagination only works if our sorting (eg `ORDER BY id asc` and
+  comparison (eg `WHERE id > 10`) agree and are based on a unique column or
+  combination of columns.
+  Imagine trying to use a non-unique column like `last_name`.
+  If the last person on the current page is `Abe Able`, requesting the next
+  page with `WHERE last_name > 'Able'` will accidentally skip `Beth Able`, who should
+  have appeared on the next page.
+
+  To avoid this, we need to ensure that we order by a unique combination of
+  columns - such as `ORDER BY last_name ASC, id ASC` - and use the same columns for the
+  `WHERE` - such as `WHERE last_name > 'Able' OR (last_name = 'Able' AND id >
+    10)`.
+
+  If your table has a unique column like `id`, `from_query/4` can automatically
+  add it to the `ORDER BY` and `WHERE` clauses of queries which don't already
+  use it; just indicate which column to use in the `config` argument.
+
+  Since the cursor is the basis of the `WHERE` clause, whatever columns the
+  query is being ordered by are included in the cursor value (which is opaque
+  to users).
+  In the example above, the cursor for each record would include the last name
+  and id.
+
+  ## Serialization
+
+  As explained above, building the cursor involves serializing the columns
+  which are used in the `ORDER BY` so that they can also be used in the
+  `WHERE`.
+  For example, if ordering users by name and id, the cursor for each user
+  record will contain that user's name and id.
+
+  These values are serialized using `Jason.encode/1`, which means you'll need
+  an implementation of the `Jason.Encoder` protocol for the type of each column you
+  sort by.
+  The library covers most common data types, but you may need to implement your
+  own for less common ones.
+
+  For example, if you're using `Postgrex.INET` for a PostgreSQL `inet` column,
+  you might need:
+
+  ```elixir
+  defmodule MyApp.CustomEncoders do
+   defimpl Jason.Encoder, for: [Postgrex.INET] do
+     def encode(struct, opts) do
+       Jason.Encode.string(EctoNetwork.INET.decode(struct), opts)
+     end
+   end
+  end
+  ```
+
+  ### Limitations
+
+  There are a few things you can't do with this pagination style.
+
+  First, you can't (reliably) paginate records without specifying a unique
+  column or combination of columns.
+  For example, if you have an `cities` table where the primary key is the
+  combination of `state_id` and `city_name`, you'll have to ensure that all
+  queries include both values in their `sorts`.
+  (It might be simpler to add a sequential integer column and pass that as the
+  `:unique_column`.)
+
+  Second, you can't sort by more than three columns, including the unique column.
+  This could be supported, it's just not implemented currently.
+
+  Third, you can't sort by columns on associations.
+  This is not implemented and would be difficult to implement.
+
+  Fourth, you can't paginate at more than one level.
+  For example, you can't get the first page of authors, get the first page of
+  posts for each author, and proceed to get subsequent pages of posts for each
+  author.
+  Such an access pattern is not a good idea even with `OFFSET` pagination; some
+  authors will have many more pages of posts than others.
+  But it becomes truly nonsensical to say "for each author, get the first 10
+  posts with id greater than 10".
+
+  Instead of attempting this, it would be better to paginate authors, then
+  separately, paginate posts filtered by author id.
   """
 
   require Ecto.Query
+  alias AbsintheRelayKeysetConnection.Cursor
 
-  @cursor_prefix "arrayconnection:"
+  @typedoc """
+  The return value of `from_query/4`, representing the paginated data.
+  """
+  @type t :: %{
+          edges: [edge],
+          page_info: page_info
+        }
+
+  @typedoc """
+  A pagination cursor which is encoded and opaque to users. A cursor represents
+  the position of a specific record in the pagination set. For example, the
+  cursor given with post `20` represents that post, so that a user can make a
+  follow-up request using the same `sorts` but specifying the first 10 records
+  after post `20`, the last 5 records before post `20`, or something similar.
+  """
+  @type encoded_cursor :: binary
+
+  @typedoc """
+  A wrapper for a single record which includes the record itself (the node) and
+  a cursor that references it.
+  """
+  @type edge :: %{
+          node: edge_node,
+          cursor: encoded_cursor
+        }
+
+  @typedoc "A single record."
+  @type edge_node :: term()
+
+  @typedoc """
+  Information about the set of records in the current page and how it relates
+  to the overall set of records available for pagination.
+  """
+  @type page_info :: %{
+          start_cursor: encoded_cursor,
+          end_cursor: encoded_cursor,
+          has_previous_page: boolean,
+          has_next_page: boolean
+        }
+
+  @typedoc """
+  A function which can take an `Ecto.Queryable()` and use it to fetch records
+  from a data store.
+  A common example would be `&MyRepo.all/1`.
+  """
+  @type repo_fun :: (Ecto.Queryable.t() -> [term])
+
+  @typedoc """
+  The name of a column to be used in an `ORDER BY` clause.
+  """
+  @type column_name :: atom()
+
+  @typedoc """
+  Either `:asc` or `:desc`, to be used in an `ORDER BY` clause. 
+  """
+  @type sort_dir :: :asc | :desc
+
+  @typedoc """
+  A single-key map, such as `%{name: :asc}`.
+
+  This is the information needed to build a single `ORDER BY` clause.
+  """
+  @type sort :: %{
+          column_name() => sort_dir()
+        }
+
+  @typedoc """
+  Options derived from the current query document.
+  """
+  @type options :: %{
+          optional(:after) => encoded_cursor(),
+          optional(:before) => encoded_cursor(),
+          optional(:first) => pos_integer(),
+          optional(:last) => pos_integer(),
+          optional(:sorts) => [sort()],
+          # if other keys are present, they are ignored
+          optional(any()) => any()
+        }
+
+  @typedoc """
+  Options that are independent of the current query document.
+  """
+  @type config :: %{
+          optional(:unique_column) => atom()
+        }
 
   @doc """
-  Return a single page of results which contain the info specified in the
+  Build a connection from an Ecto Query.
+
+  This will automatically set an `ORDER BY` and `WHERE` value based on the
+  provided options, including the cursor (if one is given), then run the query
+  with the `repo_fun` argument that was given.
+
+  Return a single page of results which contains the info specified in the
   [Relay Cursor Connections
-  Specification](https://relay.dev/graphql/connections.htm)
+  Specification](https://relay.dev/graphql/connections.htm).
+
+  ## Example
+
+      iex> AbsintheRelayKeysetConnection.from_query(
+      ...>   ecto_users_query,
+      ...>   &MyRepo.all/1,
+      ...>   %{
+      ...>     sorts: [%{name: :desc}, %{id: :desc}],
+      ...>     first: 10,
+      ...>     after: "0QTwn5SRWyJNbyIsMjZd"
+      ...>   },
+      ...>   %{unique_column: :id}
+      ...> )
+      {:ok, %{
+        edges: [
+          %{node: %MyApp.User{id: 11, name: "Jo"}, cursor: "abc123"},
+          %{node: %MyApp.User{id: 12, name: "Mo"}, cursor: "def345"}
+        ],
+        page_info: %{
+          start_cursor: "abc123",
+          end_cursor: "def345",
+          has_previous_page: true,
+          has_next_page: false
+        }
+      }}
   """
+  @spec from_query(
+          queryable :: Ecto.Queryable.t(),
+          repo_fun :: repo_fun(),
+          options :: options(),
+          config :: config()
+        ) ::
+          {:ok, t()} | {:error, String.t()}
   def from_query(_query, _repo_fun, _options, _config \\ %{})
 
   def from_query(_query, _repo_fun, %{first: _, last: _}, _config) do
@@ -95,14 +352,14 @@ defmodule AbsintheRelayKeysetConnection do
   end
 
   defp decode_cursor(%{after: encoded_cursor} = opts, cursor_columns) do
-    case cursor_to_key(encoded_cursor, cursor_columns) do
+    case Cursor.to_key(encoded_cursor, cursor_columns) do
       {:ok, key} -> {:ok, Map.put(opts, :after, key)}
       {:error, msg} -> {:error, msg}
     end
   end
 
   defp decode_cursor(%{before: encoded_cursor} = opts, cursor_columns) do
-    case cursor_to_key(encoded_cursor, cursor_columns) do
+    case Cursor.to_key(encoded_cursor, cursor_columns) do
       {:ok, key} -> {:ok, Map.put(opts, :before, key)}
       {:error, msg} -> {:error, msg}
     end
@@ -188,7 +445,7 @@ defmodule AbsintheRelayKeysetConnection do
 
   defp build_edges(nodes, cursor_columns) do
     Enum.map(nodes, fn node ->
-      cursor = key_to_cursor(node, cursor_columns)
+      cursor = Cursor.from_key(node, cursor_columns)
 
       %{
         node: node,
@@ -756,92 +1013,6 @@ defmodule AbsintheRelayKeysetConnection do
 
   defp get_cursor(edge) when is_map(edge), do: Map.fetch!(edge, :cursor)
   defp get_cursor(_edge), do: nil
-
-  @doc """
-  Creates the cursor string from a key.
-  This encoding is not meant to be tamper-proof, just to hide the cursor data
-  as an implementation detail.
-
-  ## Examples
-
-  iex> key_to_cursor(%{id: 25}, [:id])
-  "Z1pjTmFycmF5Y29ubmVjdGlvbjp7ImlkIjoyNX0="
-
-  iex> key_to_cursor(%{id: 26}, [:id])
-  "UGlkRWFycmF5Y29ubmVjdGlvbjp7ImlkIjoyNn0="
-  """
-  def key_to_cursor(key, cursor_columns) do
-    key = Map.take(key, cursor_columns)
-    {:ok, json} = Jason.encode(key)
-    # Deterministic. Helps with visually distinguishing cursors.
-    varied_padding = hash_chunk(json, 4)
-
-    (varied_padding <> @cursor_prefix <> json)
-    |> IO.iodata_to_binary()
-    |> Base.encode64()
-  end
-
-  @doc """
-  Rederives the key from the cursor string.
-  The cursor string is supplied by users and may have been tampered with.
-  However, we ensure that only the expected column values may appear in the
-  cursor, so at worst, they could paginate from a different spot, which is
-  fine.
-
-  ## Examples
-
-  iex> cursor_to_key("Z1pjTmFycmF5Y29ubmVjdGlvbjp7ImlkIjoyNX0=", [:id])
-  {:ok, %{id: 25}}
-  """
-  def cursor_to_key(encoded_cursor, expected_columns) do
-    with {:ok, _varied_padding = <<_::size(32)>> <> @cursor_prefix <> json_cursor} <-
-           Base.decode64(encoded_cursor),
-         {:ok, decoded_map} <- Jason.decode(json_cursor),
-         {:ok, atomized} <- atomize_keys(decoded_map),
-         {:ok, valid} <- ensure_valid_cursor(atomized, expected_columns) do
-      {:ok, valid}
-    else
-      _ -> {:error, :invalid_cursor}
-    end
-  rescue
-    ArgumentError ->
-      {:error, :invalid_cursor}
-  end
-
-  defp atomize_keys(map) when is_map(map) do
-    keyword_list =
-      map
-      |> Map.to_list()
-      |> Enum.map(fn {k, v} ->
-        cond do
-          is_atom(k) -> {k, v}
-          is_binary(k) -> {String.to_existing_atom(k), v}
-          true -> raise ArgumentError, "must be an atom or binary"
-        end
-      end)
-
-    {:ok, keyword_list}
-  rescue
-    ArgumentError ->
-      {:error, :invalid_column}
-  end
-
-  defp ensure_valid_cursor(tuples, expected_columns) do
-    given_columns = Keyword.keys(tuples)
-
-    if Enum.sort(given_columns) == Enum.sort(expected_columns) do
-      {:ok, Enum.into(tuples, Map.new())}
-    else
-      {:error, :invalid_columns}
-    end
-  end
-
-  defp hash_chunk(string, length)
-       when is_binary(string) and is_integer(length) and length > 0 do
-    :crypto.hash(:sha256, string)
-    |> Base.encode64()
-    |> Kernel.binary_part(0, length)
-  end
 
   defp where_query(
          query,
