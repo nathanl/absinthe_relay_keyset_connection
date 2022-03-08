@@ -5,6 +5,7 @@ defmodule AbsintheRelayKeysetConnection.Repo.Migrations.CreateUsers do
     create table(:users) do
       add(:first_name, :string)
       add(:last_name, :string)
+      add(:inserted_at, :naive_datetime_usec)
     end
   end
 end

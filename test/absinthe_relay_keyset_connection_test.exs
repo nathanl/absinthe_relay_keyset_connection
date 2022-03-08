@@ -1144,25 +1144,6 @@ defmodule AbsintheRelayKeysetConnectionTest do
       assert msg =~ "sorts"
     end
 
-    test "does not allow more than 3 sorts" do
-      assert {:error, msg} =
-               KC.from_query(
-                 User,
-                 &Repo.all/1,
-                 %{
-                   sorts: [
-                     %{last_name: :asc},
-                     %{bite_strength: :desc},
-                     %{haiku_ability: :asc},
-                     %{id: :asc}
-                   ],
-                   first: 3
-                 }
-               )
-
-      assert msg =~ "more than 3 sorts are not supported"
-    end
-
     test "errors when one map contains multiple sorts" do
       assert {:error, {:invalid_sorts, msg}} =
                KC.from_query(
@@ -1192,6 +1173,12 @@ defmodule AbsintheRelayKeysetConnectionTest do
 
   defp insert_users(data) when is_list(data) do
     expected_count = Enum.count(data)
+
+    data =
+      Enum.map(data, fn params ->
+        Map.put_new(params, :inserted_at, NaiveDateTime.utc_now())
+      end)
+
     {^expected_count, nil} = Repo.insert_all(User, data)
     Users.all()
   end

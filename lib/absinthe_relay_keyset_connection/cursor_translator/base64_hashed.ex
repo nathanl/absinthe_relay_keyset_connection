@@ -1,5 +1,11 @@
-defmodule AbsintheRelayKeysetConnection.Cursor do
-  @moduledoc false
+defmodule AbsintheRelayKeysetConnection.CursorTranslator.Base64Hashed do
+  @moduledoc """
+  A cursor translator implementation that uses base64 and a hashed padding.
+
+  A tamper-resistant (not tamper-proof) implementation that uses base64 and a hashed padding.
+  """
+
+  @behaviour AbsintheRelayKeysetConnection.CursorTranslator
 
   @prefix "🔑"
   @pad_length 2
@@ -18,6 +24,7 @@ defmodule AbsintheRelayKeysetConnection.Cursor do
   iex> from_key(%{name: "Mo", id: 26}, [:name, :id])
   "eo7wn5SRWyJNbyIsMjZd"
   """
+  @impl AbsintheRelayKeysetConnection.CursorTranslator
   def from_key(key_map, cursor_columns) do
     key =
       Enum.map(cursor_columns, fn column ->
@@ -40,18 +47,20 @@ defmodule AbsintheRelayKeysetConnection.Cursor do
 
   ## Examples
 
-  iex> to_key("sCLwn5SRWzI1XQ==", [:id])
+  iex> to_key("Tr7wn5SRWzI1XQ==", [:id])
   {:ok, %{id: 25}}
   """
+  @impl AbsintheRelayKeysetConnection.CursorTranslator
   def to_key(encoded_cursor, expected_columns) do
-    with {:ok, <<_::size(@pad_bits)>> <> @prefix <> json_cursor} <-
+    with {:ok, <<digest::size(@pad_bits)>> <> @prefix <> json_cursor} <-
            Base.decode64(encoded_cursor),
+         true <- valid_digest?(digest, json_cursor),
          {:ok, decoded_list} <- Jason.decode(json_cursor),
          true <- Enum.count(expected_columns) == Enum.count(decoded_list) do
       key =
         expected_columns
         |> Enum.zip(decoded_list)
-        |> Enum.into(Map.new())
+        |> Map.new()
 
       {:ok, key}
     else
@@ -62,8 +71,13 @@ defmodule AbsintheRelayKeysetConnection.Cursor do
       {:error, :invalid_cursor}
   end
 
+  defp valid_digest?(digest, json_cursor) do
+    <<check_digest::size(@pad_bits)>> = padding_from(json_cursor)
+    check_digest == digest
+  end
+
   # Builds a varied but deterministic padding string from the input.
-  def padding_from(string) do
+  defp padding_from(string) do
     :crypto.hash(:sha, string)
     |> Kernel.binary_part(0, @pad_length)
   end

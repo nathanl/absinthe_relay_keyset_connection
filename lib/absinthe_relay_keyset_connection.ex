@@ -144,14 +144,14 @@ defmodule AbsintheRelayKeysetConnection do
   """
 
   require Ecto.Query
-  alias AbsintheRelayKeysetConnection.Cursor
+  alias AbsintheRelayKeysetConnection.CursorTranslator.Base64Hashed
 
   @typedoc """
   The return value of `from_query/4`, representing the paginated data.
   """
-  @type t :: %{
-          edges: [edge],
-          page_info: page_info
+  @type t() :: %{
+          edges: [edge()],
+          page_info: page_info()
         }
 
   @typedoc """
@@ -161,29 +161,29 @@ defmodule AbsintheRelayKeysetConnection do
   follow-up request using the same `sorts` but specifying the first 10 records
   after post `20`, the last 5 records before post `20`, or something similar.
   """
-  @type encoded_cursor :: binary
+  @type encoded_cursor() :: binary()
 
   @typedoc """
   A wrapper for a single record which includes the record itself (the node) and
   a cursor that references it.
   """
-  @type edge :: %{
-          node: edge_node,
-          cursor: encoded_cursor
+  @type edge() :: %{
+          node: edge_node(),
+          cursor: encoded_cursor()
         }
 
   @typedoc "A single record."
-  @type edge_node :: term()
+  @type edge_node() :: term()
 
   @typedoc """
   Information about the set of records in the current page and how it relates
   to the overall set of records available for pagination.
   """
-  @type page_info :: %{
-          start_cursor: encoded_cursor,
-          end_cursor: encoded_cursor,
-          has_previous_page: boolean,
-          has_next_page: boolean
+  @type page_info() :: %{
+          start_cursor: encoded_cursor(),
+          end_cursor: encoded_cursor(),
+          has_previous_page: boolean(),
+          has_next_page: boolean()
         }
 
   @typedoc """
@@ -191,31 +191,29 @@ defmodule AbsintheRelayKeysetConnection do
   from a data store.
   A common example would be `&MyRepo.all/1`.
   """
-  @type repo_fun :: (Ecto.Queryable.t() -> [term])
+  @type repo_fun() :: (Ecto.Queryable.t() -> [term()])
 
   @typedoc """
   The name of a column to be used in an `ORDER BY` clause.
   """
-  @type column_name :: atom()
+  @type column_name() :: atom()
 
   @typedoc """
-  Either `:asc` or `:desc`, to be used in an `ORDER BY` clause. 
+  Either `:asc` or `:desc`, to be used in an `ORDER BY` clause.
   """
-  @type sort_dir :: :asc | :desc
+  @type sort_dir() :: :asc | :desc
 
   @typedoc """
   A single-key map, such as `%{name: :asc}`.
 
   This is the information needed to build a single `ORDER BY` clause.
   """
-  @type sort :: %{
-          column_name() => sort_dir()
-        }
+  @type sort() :: %{column_name() => sort_dir()}
 
   @typedoc """
   Options derived from the current query document.
   """
-  @type options :: %{
+  @type options() :: %{
           optional(:after) => encoded_cursor(),
           optional(:before) => encoded_cursor(),
           optional(:first) => pos_integer(),
@@ -228,8 +226,9 @@ defmodule AbsintheRelayKeysetConnection do
   @typedoc """
   Options that are independent of the current query document.
   """
-  @type config :: %{
-          optional(:unique_column) => atom()
+  @type config() :: %{
+          optional(:unique_column) => atom(),
+          optional(:cursor_mod) => module() | nil
         }
 
   @doc """
@@ -273,9 +272,8 @@ defmodule AbsintheRelayKeysetConnection do
           repo_fun :: repo_fun(),
           options :: options(),
           config :: config()
-        ) ::
-          {:ok, t()} | {:error, String.t()}
-  def from_query(_query, _repo_fun, _options, _config \\ %{})
+        ) :: {:ok, t()} | {:error, String.t()}
+  def from_query(query, repo_fun, options, config \\ %{})
 
   def from_query(_query, _repo_fun, %{first: _, last: _}, _config) do
     {
@@ -330,10 +328,12 @@ defmodule AbsintheRelayKeysetConnection do
   end
 
   defp do_from_query(query, repo_fun, opts, config) do
+    cursor_mod = Map.get(config, :cursor_mod) || Base64Hashed
+
     with :ok <- validate_sorts(opts),
          {:ok, opts} <- set_default_sorts(opts, config),
          {:ok, cursor_columns} <- get_cursor_columns(opts),
-         {:ok, opts} <- decode_cursor(opts, cursor_columns),
+         {:ok, opts} <- decode_cursor(opts, cursor_columns, cursor_mod),
          query <- apply_sorts(query, opts),
          {:ok, query} <- apply_where(query, opts),
          query <- limit_plus_one(query, opts) do
@@ -343,7 +343,7 @@ defmodule AbsintheRelayKeysetConnection do
 
       nodes = maybe_reverse(nodes, opts)
 
-      edges = build_edges(nodes, cursor_columns)
+      edges = build_edges(nodes, cursor_columns, cursor_mod)
 
       page_info = get_page_info(opts, edges, more_pages?)
 
@@ -351,21 +351,21 @@ defmodule AbsintheRelayKeysetConnection do
     end
   end
 
-  defp decode_cursor(%{after: encoded_cursor} = opts, cursor_columns) do
-    case Cursor.to_key(encoded_cursor, cursor_columns) do
+  defp decode_cursor(%{after: encoded_cursor} = opts, cursor_columns, cursor_mod) do
+    case cursor_mod.to_key(encoded_cursor, cursor_columns) do
       {:ok, key} -> {:ok, Map.put(opts, :after, key)}
       {:error, msg} -> {:error, msg}
     end
   end
 
-  defp decode_cursor(%{before: encoded_cursor} = opts, cursor_columns) do
-    case Cursor.to_key(encoded_cursor, cursor_columns) do
+  defp decode_cursor(%{before: encoded_cursor} = opts, cursor_columns, cursor_mod) do
+    case cursor_mod.to_key(encoded_cursor, cursor_columns) do
       {:ok, key} -> {:ok, Map.put(opts, :before, key)}
       {:error, msg} -> {:error, msg}
     end
   end
 
-  defp decode_cursor(opts, _cursor_columns) do
+  defp decode_cursor(opts, _cursor_columns, _cursor_mod) do
     {:ok, opts}
   end
 
@@ -388,7 +388,7 @@ defmodule AbsintheRelayKeysetConnection do
 
   defp set_default_sorts(opts, %{unique_column: unique_column})
        when is_atom(unique_column) do
-    unique_sort = [{unique_column, :asc}] |> Enum.into(Map.new())
+    unique_sort = %{unique_column => :asc}
 
     case opts do
       %{sorts: sorts} ->
@@ -443,9 +443,9 @@ defmodule AbsintheRelayKeysetConnection do
       :invalid_cursor_column
   end
 
-  defp build_edges(nodes, cursor_columns) do
+  defp build_edges(nodes, cursor_columns, cursor_mod) do
     Enum.map(nodes, fn node ->
-      cursor = Cursor.from_key(node, cursor_columns)
+      cursor = cursor_mod.from_key(node, cursor_columns)
 
       %{
         node: node,
@@ -505,7 +505,7 @@ defmodule AbsintheRelayKeysetConnection do
     Ecto.Query.limit(query, ^count + 1)
   end
 
-  defp limit_plus_one(query, _) do
+  defp limit_plus_one(query, _opts) do
     query
   end
 
@@ -529,409 +529,69 @@ defmodule AbsintheRelayKeysetConnection do
     end
   end
 
-  defp maybe_reverse(nodes, opts) do
-    if Map.has_key?(opts, :last) do
-      # because we ordered the opposite way for the limit query
-      Enum.reverse(nodes)
-    else
-      nodes
+  # because we ordered the opposite way for the limit query
+  defp maybe_reverse(nodes, %{last: _last}), do: Enum.reverse(nodes)
+  defp maybe_reverse(nodes, _opts), do: nodes
+
+  defp apply_where(query, %{sorts: sorts} = opts)
+       when is_map_key(opts, :before) or is_map_key(opts, :after) do
+    reversed? = Map.has_key?(opts, :before)
+    cursor = if reversed?, do: opts.before, else: opts.after
+    sorts = sorts |> Enum.flat_map(&Enum.to_list/1) |> Enum.reverse()
+
+    {:ok, Ecto.Query.where(query, ^do_build_where(nil, sorts, reversed?, cursor))}
+  end
+
+  defp apply_where(query, _opts) do
+    {:ok, query}
+  end
+
+  # Reverses the direction if the cursor is reversed
+  defp normalize_direction(direction, reversed?)
+  defp normalize_direction(direction, false), do: direction
+  defp normalize_direction(:asc, true), do: :desc
+  defp normalize_direction(:desc, true), do: :asc
+
+  # We build the where clauses by iterating over the sorts in reverse. The last column is
+  # iterated first, and `dynamic` will be nil. This is the only column to not combine with
+  # the previous columns' clauses.
+  defp do_build_where(dynamic, sorts, reversed?, cursor)
+
+  # This is the first element in sorts, which is the last column to filter on
+  defp do_build_where(nil, [{col_name, col_dir} | sorts], reversed?, cursor) do
+    column_value = Map.fetch!(cursor, col_name)
+
+    dynamic =
+      case normalize_direction(col_dir, reversed?) do
+        :asc -> Ecto.Query.dynamic([q], field(q, ^col_name) > ^column_value)
+        :desc -> Ecto.Query.dynamic([q], field(q, ^col_name) < ^column_value)
+      end
+
+    case sorts do
+      [_ | _] -> do_build_where(dynamic, sorts, reversed?, cursor)
+      [] -> dynamic
     end
   end
 
-  # With `:after`, the column is sorted as expected
-  defp apply_where(query, %{sorts: sorts, after: cursor}) when length(sorts) == 1 do
-    [[{col_name, col_dir}]] = Enum.map(sorts, &Map.to_list/1)
+  defp do_build_where(dynamic, [{col_name, col_dir} | sorts], reversed?, cursor) do
+    column_value = Map.fetch!(cursor, col_name)
 
-    col_val = Map.fetch!(cursor, col_name)
-
-    query =
-      case col_dir do
-        :asc ->
-          where_query(
-            query,
-            {:gt},
-            col_name,
-            col_val
-          )
-
-        :desc ->
-          where_query(
-            query,
-            {:lt},
-            col_name,
-            col_val
-          )
+    dir_clause =
+      case normalize_direction(col_dir, reversed?) do
+        :asc -> Ecto.Query.dynamic([q], field(q, ^col_name) > ^column_value)
+        :desc -> Ecto.Query.dynamic([q], field(q, ^col_name) < ^column_value)
       end
 
-    {:ok, query}
+    dynamic =
+      Ecto.Query.dynamic([q], ^dir_clause or (field(q, ^col_name) == ^column_value and ^dynamic))
+
+    case sorts do
+      [_ | _] -> do_build_where(dynamic, sorts, reversed?, cursor)
+      [] -> dynamic
+    end
   end
 
-  # With `:before`, the column is sorted the opposite way
-  defp apply_where(query, %{sorts: sorts, before: cursor}) when length(sorts) == 1 do
-    [[{col_name, col_dir}]] = Enum.map(sorts, &Map.to_list/1)
-
-    col_val = Map.fetch!(cursor, col_name)
-
-    query =
-      case col_dir do
-        :asc ->
-          where_query(
-            query,
-            {:lt},
-            col_name,
-            col_val
-          )
-
-        :desc ->
-          where_query(
-            query,
-            {:gt},
-            col_name,
-            col_val
-          )
-      end
-
-    {:ok, query}
-  end
-
-  # With `:after`, the columns are all sorted as expected
-  defp apply_where(query, %{sorts: sorts, after: cursor}) when length(sorts) == 2 do
-    [[{col1_name, col1_dir}], [{col2_name, col2_dir}]] = Enum.map(sorts, &Map.to_list/1)
-
-    col1_val = Map.fetch!(cursor, col1_name)
-    col2_val = Map.fetch!(cursor, col2_name)
-
-    query =
-      case {col1_dir, col2_dir} do
-        {:asc, :asc} ->
-          where_query(
-            query,
-            {:gte, :gt},
-            col1_name,
-            col1_val,
-            col2_name,
-            col2_val
-          )
-
-        {:asc, :desc} ->
-          where_query(
-            query,
-            {:gte, :lt},
-            col1_name,
-            col1_val,
-            col2_name,
-            col2_val
-          )
-
-        {:desc, :asc} ->
-          where_query(
-            query,
-            {:lte, :gt},
-            col1_name,
-            col1_val,
-            col2_name,
-            col2_val
-          )
-
-        {:desc, :desc} ->
-          where_query(
-            query,
-            {:lte, :lt},
-            col1_name,
-            col1_val,
-            col2_name,
-            col2_val
-          )
-      end
-
-    {:ok, query}
-  end
-
-  # With `:before`, the columns are all sorted the opposite way.
-  defp apply_where(query, %{sorts: sorts, before: cursor}) when length(sorts) == 2 do
-    [[{col1_name, col1_dir}], [{col2_name, col2_dir}]] = Enum.map(sorts, &Map.to_list/1)
-
-    col1_val = Map.fetch!(cursor, col1_name)
-    col2_val = Map.fetch!(cursor, col2_name)
-
-    query =
-      case {col1_dir, col2_dir} do
-        {:asc, :asc} ->
-          where_query(
-            query,
-            {:lte, :lt},
-            col1_name,
-            col1_val,
-            col2_name,
-            col2_val
-          )
-
-        {:asc, :desc} ->
-          where_query(
-            query,
-            {:lte, :gt},
-            col1_name,
-            col1_val,
-            col2_name,
-            col2_val
-          )
-
-        {:desc, :asc} ->
-          where_query(
-            query,
-            {:gte, :lt},
-            col1_name,
-            col1_val,
-            col2_name,
-            col2_val
-          )
-
-        {:desc, :desc} ->
-          where_query(
-            query,
-            {:gte, :gt},
-            col1_name,
-            col1_val,
-            col2_name,
-            col2_val
-          )
-      end
-
-    {:ok, query}
-  end
-
-  # With `:after`, the columns are all sorted as expected
-  defp apply_where(query, %{sorts: sorts, after: cursor}) when length(sorts) == 3 do
-    [[{col1_name, col1_dir}], [{col2_name, col2_dir}], [{col3_name, col3_dir}]] =
-      Enum.map(sorts, &Map.to_list/1)
-
-    col1_val = Map.fetch!(cursor, col1_name)
-    col2_val = Map.fetch!(cursor, col2_name)
-    col3_val = Map.fetch!(cursor, col3_name)
-
-    query =
-      case {col1_dir, col2_dir, col3_dir} do
-        {:asc, :asc, :asc} ->
-          where_query(
-            query,
-            {:gte, :gte, :gt},
-            col1_name,
-            col1_val,
-            col2_name,
-            col2_val,
-            col3_name,
-            col3_val
-          )
-
-        {:asc, :asc, :desc} ->
-          where_query(
-            query,
-            {:gte, :gte, :lt},
-            col1_name,
-            col1_val,
-            col2_name,
-            col2_val,
-            col3_name,
-            col3_val
-          )
-
-        {:asc, :desc, :asc} ->
-          where_query(
-            query,
-            {:gte, :lte, :gt},
-            col1_name,
-            col1_val,
-            col2_name,
-            col2_val,
-            col3_name,
-            col3_val
-          )
-
-        {:asc, :desc, :desc} ->
-          where_query(
-            query,
-            {:gte, :lte, :lt},
-            col1_name,
-            col1_val,
-            col2_name,
-            col2_val,
-            col3_name,
-            col3_val
-          )
-
-        {:desc, :asc, :asc} ->
-          where_query(
-            query,
-            {:lte, :gte, :gt},
-            col1_name,
-            col1_val,
-            col2_name,
-            col2_val,
-            col3_name,
-            col3_val
-          )
-
-        {:desc, :asc, :desc} ->
-          where_query(
-            query,
-            {:lte, :gte, :lt},
-            col1_name,
-            col1_val,
-            col2_name,
-            col2_val,
-            col3_name,
-            col3_val
-          )
-
-        {:desc, :desc, :asc} ->
-          where_query(
-            query,
-            {:lte, :lte, :gt},
-            col1_name,
-            col1_val,
-            col2_name,
-            col2_val,
-            col3_name,
-            col3_val
-          )
-
-        {:desc, :desc, :desc} ->
-          where_query(
-            query,
-            {:lte, :lte, :lt},
-            col1_name,
-            col1_val,
-            col2_name,
-            col2_val,
-            col3_name,
-            col3_val
-          )
-      end
-
-    {:ok, query}
-  end
-
-  # With `:before`, the columns are all sorted the opposite way.
-  defp apply_where(query, %{sorts: sorts, before: cursor}) when length(sorts) == 3 do
-    [[{col1_name, col1_dir}], [{col2_name, col2_dir}], [{col3_name, col3_dir}]] =
-      Enum.map(sorts, &Map.to_list/1)
-
-    col1_val = Map.fetch!(cursor, col1_name)
-    col2_val = Map.fetch!(cursor, col2_name)
-    col3_val = Map.fetch!(cursor, col3_name)
-
-    query =
-      case {col1_dir, col2_dir, col3_dir} do
-        {:asc, :asc, :asc} ->
-          where_query(
-            query,
-            {:lte, :lte, :lt},
-            col1_name,
-            col1_val,
-            col2_name,
-            col2_val,
-            col3_name,
-            col3_val
-          )
-
-        {:asc, :asc, :desc} ->
-          where_query(
-            query,
-            {:lte, :lte, :gt},
-            col1_name,
-            col1_val,
-            col2_name,
-            col2_val,
-            col3_name,
-            col3_val
-          )
-
-        {:asc, :desc, :asc} ->
-          where_query(
-            query,
-            {:lte, :gte, :lt},
-            col1_name,
-            col1_val,
-            col2_name,
-            col2_val,
-            col3_name,
-            col3_val
-          )
-
-        {:asc, :desc, :desc} ->
-          where_query(
-            query,
-            {:lte, :gte, :gt},
-            col1_name,
-            col1_val,
-            col2_name,
-            col2_val,
-            col3_name,
-            col3_val
-          )
-
-        {:desc, :asc, :asc} ->
-          where_query(
-            query,
-            {:gte, :lte, :lt},
-            col1_name,
-            col1_val,
-            col2_name,
-            col2_val,
-            col3_name,
-            col3_val
-          )
-
-        {:desc, :asc, :desc} ->
-          where_query(
-            query,
-            {:gte, :lte, :gt},
-            col1_name,
-            col1_val,
-            col2_name,
-            col2_val,
-            col3_name,
-            col3_val
-          )
-
-        {:desc, :desc, :asc} ->
-          where_query(
-            query,
-            {:gte, :gte, :lt},
-            col1_name,
-            col1_val,
-            col2_name,
-            col2_val,
-            col3_name,
-            col3_val
-          )
-
-        {:desc, :desc, :desc} ->
-          where_query(
-            query,
-            {:gte, :gte, :gt},
-            col1_name,
-            col1_val,
-            col2_name,
-            col2_val,
-            col3_name,
-            col3_val
-          )
-      end
-
-    {:ok, query}
-  end
-
-  defp apply_where(_query, %{sorts: sorts}) when length(sorts) > 3 do
-    {:error,
-     "more than 3 sorts are not supported at this time. Requested sorts: #{inspect(sorts)}"}
-  end
-
-  defp apply_where(query, _pagination_args) do
-    {:ok, query}
-  end
-
-  defp get_page_info(%{after: _, first: _}, edges, more_pages?) do
+  defp get_page_info(%{after: _after, first: _first}, edges, more_pages?) do
     %{
       # `after` a valid cursor means we definitely skipped at least one
       has_previous_page: true,
@@ -941,7 +601,7 @@ defmodule AbsintheRelayKeysetConnection do
     |> add_start_and_end_cursors(edges)
   end
 
-  defp get_page_info(%{after: _}, edges, _more_pages?) do
+  defp get_page_info(%{after: _after}, edges, _more_pages?) do
     %{
       # `after` a valid cursor means we definitely skipped at least one
       has_previous_page: true,
@@ -951,7 +611,7 @@ defmodule AbsintheRelayKeysetConnection do
     |> add_start_and_end_cursors(edges)
   end
 
-  defp get_page_info(%{before: _, last: _}, edges, more_pages?) do
+  defp get_page_info(%{before: _before, last: _last}, edges, more_pages?) do
     %{
       # `before` a valid cursor means we stopped short of at least one
       has_next_page: true,
@@ -961,7 +621,7 @@ defmodule AbsintheRelayKeysetConnection do
     |> add_start_and_end_cursors(edges)
   end
 
-  defp get_page_info(%{before: _}, edges, _more_pages?) do
+  defp get_page_info(%{before: _before}, edges, _more_pages?) do
     %{
       # `before` a valid cursor means we stopped short of at least one
       has_next_page: true,
@@ -971,7 +631,7 @@ defmodule AbsintheRelayKeysetConnection do
     |> add_start_and_end_cursors(edges)
   end
 
-  defp get_page_info(%{first: _}, edges, more_pages?) do
+  defp get_page_info(%{first: _first}, edges, more_pages?) do
     %{
       # With only :first, we may have stopped short of some records
       has_next_page: more_pages?,
@@ -981,7 +641,7 @@ defmodule AbsintheRelayKeysetConnection do
     |> add_start_and_end_cursors(edges)
   end
 
-  defp get_page_info(%{last: _}, edges, more_pages?) do
+  defp get_page_info(%{last: _last}, edges, more_pages?) do
     %{
       # With only :last, we may have skipped some records
       has_previous_page: more_pages?,
@@ -1013,254 +673,4 @@ defmodule AbsintheRelayKeysetConnection do
 
   defp get_cursor(edge) when is_map(edge), do: Map.fetch!(edge, :cursor)
   defp get_cursor(_edge), do: nil
-
-  defp where_query(
-         query,
-         {:lt},
-         col_name,
-         col_val
-       ) do
-    Ecto.Query.where(
-      query,
-      [q],
-      field(q, ^col_name) < ^col_val
-    )
-  end
-
-  defp where_query(
-         query,
-         {:gt},
-         col_name,
-         col_val
-       ) do
-    Ecto.Query.where(
-      query,
-      [q],
-      field(q, ^col_name) > ^col_val
-    )
-  end
-
-  defp where_query(
-         query,
-         {:lte, :lt},
-         col1_name,
-         col1_val,
-         col2_name,
-         col2_val
-       ) do
-    Ecto.Query.where(
-      query,
-      [q],
-      field(q, ^col1_name) < ^col1_val or
-        (field(q, ^col1_name) == ^col1_val and field(q, ^col2_name) < ^col2_val)
-    )
-  end
-
-  defp where_query(
-         query,
-         {:lte, :gt},
-         col1_name,
-         col1_val,
-         col2_name,
-         col2_val
-       ) do
-    Ecto.Query.where(
-      query,
-      [q],
-      field(q, ^col1_name) < ^col1_val or
-        (field(q, ^col1_name) == ^col1_val and field(q, ^col2_name) > ^col2_val)
-    )
-  end
-
-  defp where_query(
-         query,
-         {:gte, :lt},
-         col1_name,
-         col1_val,
-         col2_name,
-         col2_val
-       ) do
-    Ecto.Query.where(
-      query,
-      [q],
-      field(q, ^col1_name) > ^col1_val or
-        (field(q, ^col1_name) == ^col1_val and field(q, ^col2_name) < ^col2_val)
-    )
-  end
-
-  defp where_query(
-         query,
-         {:gte, :gt},
-         col1_name,
-         col1_val,
-         col2_name,
-         col2_val
-       ) do
-    Ecto.Query.where(
-      query,
-      [q],
-      field(q, ^col1_name) > ^col1_val or
-        (field(q, ^col1_name) == ^col1_val and field(q, ^col2_name) > ^col2_val)
-    )
-  end
-
-  defp where_query(
-         query,
-         {:lte, :lte, :lt},
-         col1_name,
-         col1_val,
-         col2_name,
-         col2_val,
-         col3_name,
-         col3_val
-       ) do
-    Ecto.Query.where(
-      query,
-      [q],
-      field(q, ^col1_name) < ^col1_val or
-        (field(q, ^col1_name) == ^col1_val and
-           (field(q, ^col2_name) < ^col2_val or
-              (field(q, ^col2_name) == ^col2_val and field(q, ^col3_name) < ^col3_val)))
-    )
-  end
-
-  defp where_query(
-         query,
-         {:lte, :lte, :gt},
-         col1_name,
-         col1_val,
-         col2_name,
-         col2_val,
-         col3_name,
-         col3_val
-       ) do
-    Ecto.Query.where(
-      query,
-      [q],
-      field(q, ^col1_name) < ^col1_val or
-        (field(q, ^col1_name) == ^col1_val and
-           (field(q, ^col2_name) < ^col2_val or
-              (field(q, ^col2_name) == ^col2_val and field(q, ^col3_name) > ^col3_val)))
-    )
-  end
-
-  defp where_query(
-         query,
-         {:lte, :gte, :lt},
-         col1_name,
-         col1_val,
-         col2_name,
-         col2_val,
-         col3_name,
-         col3_val
-       ) do
-    Ecto.Query.where(
-      query,
-      [q],
-      field(q, ^col1_name) < ^col1_val or
-        (field(q, ^col1_name) == ^col1_val and
-           (field(q, ^col2_name) > ^col2_val or
-              (field(q, ^col2_name) == ^col2_val and field(q, ^col3_name) < ^col3_val)))
-    )
-  end
-
-  defp where_query(
-         query,
-         {:lte, :gte, :gt},
-         col1_name,
-         col1_val,
-         col2_name,
-         col2_val,
-         col3_name,
-         col3_val
-       ) do
-    Ecto.Query.where(
-      query,
-      [q],
-      field(q, ^col1_name) < ^col1_val or
-        (field(q, ^col1_name) == ^col1_val and
-           (field(q, ^col2_name) > ^col2_val or
-              (field(q, ^col2_name) == ^col2_val and field(q, ^col3_name) > ^col3_val)))
-    )
-  end
-
-  defp where_query(
-         query,
-         {:gte, :lte, :lt},
-         col1_name,
-         col1_val,
-         col2_name,
-         col2_val,
-         col3_name,
-         col3_val
-       ) do
-    Ecto.Query.where(
-      query,
-      [q],
-      field(q, ^col1_name) > ^col1_val or
-        (field(q, ^col1_name) == ^col1_val and
-           (field(q, ^col2_name) < ^col2_val or
-              (field(q, ^col2_name) == ^col2_val and field(q, ^col3_name) < ^col3_val)))
-    )
-  end
-
-  defp where_query(
-         query,
-         {:gte, :lte, :gt},
-         col1_name,
-         col1_val,
-         col2_name,
-         col2_val,
-         col3_name,
-         col3_val
-       ) do
-    Ecto.Query.where(
-      query,
-      [q],
-      field(q, ^col1_name) > ^col1_val or
-        (field(q, ^col1_name) == ^col1_val and
-           (field(q, ^col2_name) < ^col2_val or
-              (field(q, ^col2_name) == ^col2_val and field(q, ^col3_name) > ^col3_val)))
-    )
-  end
-
-  defp where_query(
-         query,
-         {:gte, :gte, :gt},
-         col1_name,
-         col1_val,
-         col2_name,
-         col2_val,
-         col3_name,
-         col3_val
-       ) do
-    Ecto.Query.where(
-      query,
-      [q],
-      field(q, ^col1_name) > ^col1_val or
-        (field(q, ^col1_name) == ^col1_val and
-           (field(q, ^col2_name) > ^col2_val or
-              (field(q, ^col2_name) == ^col2_val and field(q, ^col3_name) > ^col3_val)))
-    )
-  end
-
-  defp where_query(
-         query,
-         {:gte, :gte, :lt},
-         col1_name,
-         col1_val,
-         col2_name,
-         col2_val,
-         col3_name,
-         col3_val
-       ) do
-    Ecto.Query.where(
-      query,
-      [q],
-      field(q, ^col1_name) > ^col1_val or
-        (field(q, ^col1_name) == ^col1_val and
-           (field(q, ^col2_name) > ^col2_val or
-              (field(q, ^col2_name) == ^col2_val and field(q, ^col3_name) < ^col3_val)))
-    )
-  end
 end
