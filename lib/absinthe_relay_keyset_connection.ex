@@ -141,7 +141,7 @@ defmodule AbsintheRelayKeysetConnection do
   """
 
   require Ecto.Query
-  alias AbsintheRelayKeysetConnection.Cursor
+  alias AbsintheRelayKeysetConnection.CursorTranslator.Base64Hashed
 
   @typedoc """
   The return value of `from_query/4`, representing the paginated data.
@@ -224,7 +224,8 @@ defmodule AbsintheRelayKeysetConnection do
   Options that are independent of the current query document.
   """
   @type config() :: %{
-          optional(:unique_column) => atom()
+          optional(:unique_column) => atom(),
+          optional(:cursor_mod) => module() | nil
         }
 
   @doc """
@@ -324,10 +325,12 @@ defmodule AbsintheRelayKeysetConnection do
   end
 
   defp do_from_query(query, repo_fun, opts, config) do
+    cursor_mod = Map.get(config, :cursor_mod) || Base64Hashed
+
     with :ok <- validate_sorts(opts),
          {:ok, opts} <- set_default_sorts(opts, config),
          {:ok, cursor_columns} <- get_cursor_columns(opts),
-         {:ok, opts} <- decode_cursor(opts, cursor_columns),
+         {:ok, opts} <- decode_cursor(opts, cursor_columns, cursor_mod),
          query <- apply_sorts(query, opts),
          {:ok, query} <- apply_where(query, opts),
          query <- limit_plus_one(query, opts) do
@@ -337,7 +340,7 @@ defmodule AbsintheRelayKeysetConnection do
 
       nodes = maybe_reverse(nodes, opts)
 
-      edges = build_edges(nodes, cursor_columns)
+      edges = build_edges(nodes, cursor_columns, cursor_mod)
 
       page_info = get_page_info(opts, edges, more_pages?)
 
@@ -345,21 +348,21 @@ defmodule AbsintheRelayKeysetConnection do
     end
   end
 
-  defp decode_cursor(%{after: encoded_cursor} = opts, cursor_columns) do
-    case Cursor.to_key(encoded_cursor, cursor_columns) do
+  defp decode_cursor(%{after: encoded_cursor} = opts, cursor_columns, cursor_mod) do
+    case cursor_mod.to_key(encoded_cursor, cursor_columns) do
       {:ok, key} -> {:ok, Map.put(opts, :after, key)}
       {:error, msg} -> {:error, msg}
     end
   end
 
-  defp decode_cursor(%{before: encoded_cursor} = opts, cursor_columns) do
-    case Cursor.to_key(encoded_cursor, cursor_columns) do
+  defp decode_cursor(%{before: encoded_cursor} = opts, cursor_columns, cursor_mod) do
+    case cursor_mod.to_key(encoded_cursor, cursor_columns) do
       {:ok, key} -> {:ok, Map.put(opts, :before, key)}
       {:error, msg} -> {:error, msg}
     end
   end
 
-  defp decode_cursor(opts, _cursor_columns) do
+  defp decode_cursor(opts, _cursor_columns, _cursor_mod) do
     {:ok, opts}
   end
 
@@ -437,9 +440,9 @@ defmodule AbsintheRelayKeysetConnection do
       :invalid_cursor_column
   end
 
-  defp build_edges(nodes, cursor_columns) do
+  defp build_edges(nodes, cursor_columns, cursor_mod) do
     Enum.map(nodes, fn node ->
-      cursor = Cursor.from_key(node, cursor_columns)
+      cursor = cursor_mod.from_key(node, cursor_columns)
 
       %{
         node: node,
