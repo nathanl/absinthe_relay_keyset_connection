@@ -71,6 +71,12 @@ defmodule AbsintheRelayKeysetConnection.CursorTranslator.Base64Hashed do
       {:error, :invalid_cursor}
   end
 
+  # Since we built the padding from a hash of the original contents of the
+  # cursor, we can check whether the cursor we got back would have produced the
+  # same padding. This is not a very strong check because someone could find
+  # a tampered value that would produce the same hash, especially since we
+  # don't use the entire hash in the padding. But casual tampering would be
+  # rejected.
   defp valid_digest?(digest, json_cursor) do
     <<check_digest::size(@pad_bits)>> = padding_from(json_cursor)
     check_digest == digest
