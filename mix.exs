@@ -73,7 +73,7 @@ defmodule AbsintheRelayKeysetConnection.MixProject do
     """
   end
 
-defp package() do
+  defp package() do
     [
       licenses: ["MIT"],
       links: %{"GitHub" => "https://github.com/nathanl/absinthe_relay_keyset_connection"}

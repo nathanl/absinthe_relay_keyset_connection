@@ -7,16 +7,14 @@ Requires defining a connection with
 
 ## Installation
 
-Not currently on [HexDocs](https://hexdocs.pm), as I'm not sure whether this
-will remain an independent library or be folded into an existing one.
-
-The current package can be installed by adding
-`absinthe_relay_keyset_connection` to your list of dependencies in `mix.exs`:
+Add to to your list of dependencies in `mix.exs`:
 
 ```elixir
 def deps do
   [
-    {:absinthe_relay_keyset_connection, git: "git@github.com:nathanl/absinthe_relay_keyset_connection.git"}
+    {:absinthe_relay_keyset_connection, "~> 1.0"}
   ]
 end
 ```
+
+... and `mix deps.get`.
