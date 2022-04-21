@@ -18,3 +18,7 @@ end
 ```
 
 ... and `mix deps.get`.
+
+## Usage
+
+See the docs linked from [the package](https://hex.pm/packages/absinthe_relay_keyset_connection).
