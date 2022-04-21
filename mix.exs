@@ -68,8 +68,9 @@ defmodule AbsintheRelayKeysetConnection.MixProject do
     """
     Support for paginated result sets using keyset pagination, for use in an
     Absinthe resolver module.
+
     Requires defining a connection with
-    [Absinthe.Relay.Connection](https://hexdocs.pm/absinthe_relay/Absinthe.Relay.Connection.html).
+    Absinthe.Relay.Connection from the absinthe_relay package.
     """
   end
 
