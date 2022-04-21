@@ -3,6 +3,24 @@ defmodule AbsintheRelayKeysetConnection.CursorTranslator.Base64Hashed do
   A cursor translator implementation that uses base64 and a hashed padding.
 
   A tamper-resistant (not tamper-proof) implementation that uses base64 and a hashed padding.
+
+  These values are serialized using `Jason.encode/1`, which means you'll need
+  an implementation of the `Jason.Encoder` protocol for the type of each column you
+  sort by.
+  The library covers most common data types, but you may need to implement your
+  own for less common ones.
+
+  For example, if you're using `Postgrex.INET` for a PostgreSQL `inet` column,
+  you might need:
+
+  ```elixir
+  defmodule MyApp.CustomEncoders do
+   defimpl Jason.Encoder, for: [Postgrex.INET] do
+     def encode(struct, opts) do
+       Jason.Encode.string(EctoNetwork.INET.decode(struct), opts)
+     end
+   end
+  end
   """
 
   @behaviour AbsintheRelayKeysetConnection.CursorTranslator
@@ -18,11 +36,11 @@ defmodule AbsintheRelayKeysetConnection.CursorTranslator.Base64Hashed do
 
   ## Examples
 
-  iex> from_key(%{id: 25}, [:id])
-  "Tr7wn5SRWzI1XQ=="
+      iex> from_key(%{id: 25}, [:id])
+      "Tr7wn5SRWzI1XQ=="
 
-  iex> from_key(%{name: "Mo", id: 26}, [:name, :id])
-  "eo7wn5SRWyJNbyIsMjZd"
+      iex> from_key(%{name: "Mo", id: 26}, [:name, :id])
+      "eo7wn5SRWyJNbyIsMjZd"
   """
   @impl AbsintheRelayKeysetConnection.CursorTranslator
   def from_key(key_map, cursor_columns) do
@@ -47,8 +65,8 @@ defmodule AbsintheRelayKeysetConnection.CursorTranslator.Base64Hashed do
 
   ## Examples
 
-  iex> to_key("Tr7wn5SRWzI1XQ==", [:id])
-  {:ok, %{id: 25}}
+      iex> to_key("Tr7wn5SRWzI1XQ==", [:id])
+      {:ok, %{id: 25}}
   """
   @impl AbsintheRelayKeysetConnection.CursorTranslator
   def to_key(encoded_cursor, expected_columns) do

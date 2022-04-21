@@ -104,24 +104,9 @@ defmodule AbsintheRelayKeysetConnection do
   For example, if ordering users by name and id, the cursor for each user
   record will contain that user's name and id.
 
-  These values are serialized using `Jason.encode/1`, which means you'll need
-  an implementation of the `Jason.Encoder` protocol for the type of each column you
-  sort by.
-  The library covers most common data types, but you may need to implement your
-  own for less common ones.
-
-  For example, if you're using `Postgrex.INET` for a PostgreSQL `inet` column,
-  you might need:
-
-  ```elixir
-  defmodule MyApp.CustomEncoders do
-   defimpl Jason.Encoder, for: [Postgrex.INET] do
-     def encode(struct, opts) do
-       Jason.Encode.string(EctoNetwork.INET.decode(struct), opts)
-     end
-   end
-  end
-  ```
+  You can provide your own `AbsintheRelayKeysetConnection.CursorTranslator` to customize
+  the serialization and deserialization of your cursors, or use the built-in
+  `AbsintheRelayKeysetConnection.CursorTranslator.Base64Hashed`.
 
   ### Cautions
 

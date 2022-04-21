@@ -13,7 +13,10 @@ defmodule AbsintheRelayKeysetConnection.MixProject do
       ],
       aliases: aliases(),
       deps: deps(),
-      dialyzer: dialyzer()
+      dialyzer: dialyzer(),
+      description: description(),
+      package: package(),
+      source_url: "https://github.com/nathanl/absinthe_relay_keyset_connection"
     ]
   end
 
@@ -32,7 +35,7 @@ defmodule AbsintheRelayKeysetConnection.MixProject do
   # Run "mix help deps" to learn about dependencies.
   defp deps do
     [
-      {:jason, "~> 1.2"},
+      {:jason, "~> 1.2", optional: true},
       {:ecto_sql, "~> 3.7"},
       {:ex_doc, "~> 0.25.2", only: :dev, runtime: false},
       {:postgrex, "~> 0.15", only: :test},
@@ -58,6 +61,22 @@ defmodule AbsintheRelayKeysetConnection.MixProject do
       ignore_warnings: ".dialyzer_ignore.exs",
       list_unused_filters: true,
       plt_add_apps: [:ex_unit, :mix]
+    ]
+  end
+
+  defp description do
+    """
+    Support for paginated result sets using keyset pagination, for use in an
+    Absinthe resolver module.
+    Requires defining a connection with
+    [Absinthe.Relay.Connection](https://hexdocs.pm/absinthe_relay/Absinthe.Relay.Connection.html).
+    """
+  end
+
+defp package() do
+    [
+      licenses: ["MIT"],
+      links: %{"GitHub" => "https://github.com/nathanl/absinthe_relay_keyset_connection"}
     ]
   end
 end
