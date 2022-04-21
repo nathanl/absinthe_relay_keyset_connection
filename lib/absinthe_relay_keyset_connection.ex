@@ -22,7 +22,7 @@ defmodule AbsintheRelayKeysetConnection do
   )
   ```
 
-  ## More Details
+  ## Details
 
   ### Why keyset pagination?
 
@@ -36,6 +36,9 @@ defmodule AbsintheRelayKeysetConnection do
   underlying database schema.
   However, when the value of `OFFSET` is large, it [can cause poor database
   performance](https://use-the-index-luke.com/no-offset).
+
+  (A "large" offset depends on your data; it might be in the millions before you
+  notice a performance hit.)
 
   Keyset pagination means that, in the example above, the first page might be
   fetched with `WHERE id > 0 ORDER BY id ASC LIMIT 10`.
@@ -63,8 +66,11 @@ defmodule AbsintheRelayKeysetConnection do
   ### Sorting and uniqueness
 
   Keyset pagination only works if our sorting (eg `ORDER BY id asc` and
-  comparison (eg `WHERE id > 10`) agree and are based on a unique column or
-  combination of columns.
+  comparison (eg `WHERE id > 10`) agree and are based on a unique, sortable
+  column or combination of columns.
+  (In database terms, any attribute or list of attributes which uniquely identify
+  a row is a "key"; this likely is the basis of the term "keyset pagination".)
+
   Imagine trying to use a non-unique column like `last_name`.
   If the last person on the current page is `Abe Able`, requesting the next
   page with `WHERE last_name > 'Able'` will accidentally skip `Beth Able`, who should
@@ -79,9 +85,14 @@ defmodule AbsintheRelayKeysetConnection do
   add it to the `ORDER BY` and `WHERE` clauses of queries which don't already
   use it; just indicate which column to use in the `config` argument.
 
-  Since the cursor is the basis of the `WHERE` clause, whatever columns the
-  query is being ordered by are included in the cursor value (which is opaque
-  to users).
+  It's also problematic if the columns are not meaningfully ordered. If you're
+  paging through records and request `WHERE id > 100`, a new record inserted
+  with id `105` will show up in your results.
+  But if you're using `WHERE uuid > $some_uuid`, it might not.
+
+  Note that since the cursor is the basis of the `WHERE` clause, whatever
+  columns the query is being ordered by are included in the cursor value (which
+  is opaque to users).
   In the example above, the cursor for each record would include the last name
   and id.
 
@@ -112,7 +123,7 @@ defmodule AbsintheRelayKeysetConnection do
   end
   ```
 
-  ### Limitations
+  ### Cautions
 
   There are a few things you can't do with this pagination style.
 
@@ -138,6 +149,10 @@ defmodule AbsintheRelayKeysetConnection do
 
   Instead of attempting this, it would be better to paginate authors, then
   separately, paginate posts filtered by author id.
+
+  Finally, a caution: since the cursor needs to contain the column values,
+  beware of using large columns in a cursor; they will make the cursor itself
+  large.
   """
 
   require Ecto.Query
