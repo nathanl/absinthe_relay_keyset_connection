@@ -16,7 +16,8 @@ defmodule AbsintheRelayKeysetConnection.MixProject do
       dialyzer: dialyzer(),
       description: description(),
       package: package(),
-      source_url: "https://github.com/nathanl/absinthe_relay_keyset_connection"
+      source_url: "https://github.com/nathanl/absinthe_relay_keyset_connection",
+      docs: docs()
     ]
   end
 
@@ -77,6 +78,16 @@ defmodule AbsintheRelayKeysetConnection.MixProject do
     [
       licenses: ["MIT"],
       links: %{"GitHub" => "https://github.com/nathanl/absinthe_relay_keyset_connection"}
+    ]
+  end
+
+  defp docs do
+    [
+      main: "readme",
+      extras: [
+        "README.md",
+        "CHANGELOG.md"
+      ]
     ]
   end
 end
