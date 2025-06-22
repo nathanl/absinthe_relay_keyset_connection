@@ -7,3 +7,7 @@
   - ecto_sql ~> 3.8
   - ex_doc ~> 0.34
   - dialyxir ~> 1.4
+
+### v1.0.0 (2022-04-01)
+
+- First public release
