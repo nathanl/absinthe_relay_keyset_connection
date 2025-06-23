@@ -4,8 +4,8 @@ defmodule AbsintheRelayKeysetConnection.MixProject do
   def project do
     [
       app: :absinthe_relay_keyset_connection,
-      version: "1.0.0",
-      elixir: "~> 1.12",
+      version: "2.0.0",
+      elixir: "~> 1.15",
       start_permanent: Mix.env() == :prod,
       elixirc_paths: elixirc_paths(Mix.env()),
       elixirc_options: [
@@ -16,7 +16,8 @@ defmodule AbsintheRelayKeysetConnection.MixProject do
       dialyzer: dialyzer(),
       description: description(),
       package: package(),
-      source_url: "https://github.com/nathanl/absinthe_relay_keyset_connection"
+      source_url: "https://github.com/nathanl/absinthe_relay_keyset_connection",
+      docs: docs()
     ]
   end
 
@@ -36,10 +37,10 @@ defmodule AbsintheRelayKeysetConnection.MixProject do
   defp deps do
     [
       {:jason, "~> 1.2", optional: true},
-      {:ecto_sql, "~> 3.7"},
-      {:ex_doc, "~> 0.25.2", only: :dev, runtime: false},
+      {:ecto_sql, "~> 3.8"},
+      {:ex_doc, "~> 0.34", only: :dev, runtime: false},
       {:postgrex, "~> 0.15", only: :test},
-      {:dialyxir, "~> 1.0", only: [:dev], runtime: false}
+      {:dialyxir, "~> 1.4", only: [:dev], runtime: false}
     ]
   end
 
@@ -59,7 +60,6 @@ defmodule AbsintheRelayKeysetConnection.MixProject do
   defp dialyzer do
     [
       ignore_warnings: ".dialyzer_ignore.exs",
-      list_unused_filters: true,
       plt_add_apps: [:ex_unit, :mix]
     ]
   end
@@ -78,6 +78,16 @@ defmodule AbsintheRelayKeysetConnection.MixProject do
     [
       licenses: ["MIT"],
       links: %{"GitHub" => "https://github.com/nathanl/absinthe_relay_keyset_connection"}
+    ]
+  end
+
+  defp docs do
+    [
+      main: "readme",
+      extras: [
+        "README.md",
+        "CHANGELOG.md"
+      ]
     ]
   end
 end

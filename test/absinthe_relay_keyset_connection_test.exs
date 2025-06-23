@@ -1,5 +1,5 @@
 defmodule AbsintheRelayKeysetConnectionTest do
-  use AbsintheRelayKeysetConnection.DataCase
+  use AbsintheRelayKeysetConnection.DataCase, async: true
 
   alias AbsintheRelayKeysetConnection, as: KC
   alias AbsintheRelayKeysetConnection.{Repo, User, Users}
