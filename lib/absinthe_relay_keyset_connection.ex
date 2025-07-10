@@ -18,7 +18,10 @@ defmodule AbsintheRelayKeysetConnection do
       first: 10,
       after: "0QTwn5SRWyJNbyIsMjZd"
     },
-    %{unique_column: :id}
+    %{
+      unique_column: :id,
+      null_coalesce: %{name: ""}  # Handle NULL names
+    }
   )
   ```
 
@@ -107,6 +110,61 @@ defmodule AbsintheRelayKeysetConnection do
   You can provide your own `AbsintheRelayKeysetConnection.CursorTranslator` to customize
   the serialization and deserialization of your cursors, or use the built-in
   `AbsintheRelayKeysetConnection.CursorTranslator.Base64Hashed`.
+
+  ## Handling NULL Values
+
+  By default, NULL values in sortable columns can cause pagination to fail because
+  SQL comparisons with NULL (like `WHERE name > NULL`) are unsafe and forbidden by Ecto.
+  
+  To handle this, you can use the `:null_coalesce` configuration option to specify
+  replacement values for NULL columns during sorting and cursor operations.
+
+  ### Example with NULL Coalescing
+
+  ```elixir
+  # Without null coalescing - crashes if cursors contain NULL values
+  AbsintheRelayKeysetConnection.from_query(
+    User,
+    &MyRepo.all/1,
+    %{sorts: [%{last_name: :asc}], first: 10},
+    %{unique_column: :id}
+  )
+
+  # With null coalescing - NULL values are treated as empty strings
+  AbsintheRelayKeysetConnection.from_query(
+    User,
+    &MyRepo.all/1,
+    %{sorts: [%{last_name: :asc}], first: 10},
+    %{
+      unique_column: :id,
+      null_coalesce: %{last_name: ""}
+    }
+  )
+  ```
+
+  ### How NULL Coalescing Works
+
+  When you configure `null_coalesce: %{last_name: ""}`:
+
+  1. **SQL Sorting**: Uses `ORDER BY COALESCE(last_name, '')` - NULL values sort as empty strings
+  2. **Cursor Encoding**: NULL values are encoded as the coalesce value in cursors
+  3. **WHERE Clauses**: Uses `WHERE COALESCE(last_name, '') > 'value'` for safe comparisons
+
+  ### Per-Column Configuration
+
+  You can specify different coalesce values for different columns:
+
+  ```elixir
+  %{
+    null_coalesce: %{
+      last_name: "",           # NULL last names become empty string
+      first_name: "Unknown",   # NULL first names become "Unknown"
+      score: 0                 # NULL scores become 0
+    }
+  }
+  ```
+
+  This ensures consistent, predictable sorting behavior regardless of NULL values in your data.
 
   ### Cautions
 
@@ -225,7 +283,8 @@ defmodule AbsintheRelayKeysetConnection do
   """
   @type config() :: %{
           optional(:unique_column) => atom(),
-          optional(:cursor_mod) => module() | nil
+          optional(:cursor_mod) => module() | nil,
+          optional(:null_coalesce) => %{atom() => term()}
         }
 
   @doc """
@@ -249,7 +308,10 @@ defmodule AbsintheRelayKeysetConnection do
       ...>     first: 10,
       ...>     after: "0QTwn5SRWyJNbyIsMjZd"
       ...>   },
-      ...>   %{unique_column: :id}
+      ...>   %{
+      ...>     unique_column: :id,
+      ...>     null_coalesce: %{name: ""}
+      ...>   }
       ...> )
       {:ok, %{
         edges: [
@@ -326,13 +388,14 @@ defmodule AbsintheRelayKeysetConnection do
 
   defp do_from_query(query, repo_fun, opts, config) do
     cursor_mod = Map.get(config, :cursor_mod) || Base64Hashed
+    cursor_config = %{null_coalesce: Map.get(config, :null_coalesce, %{})}
 
     with :ok <- validate_sorts(opts),
          {:ok, opts} <- set_default_sorts(opts, config),
          {:ok, cursor_columns} <- get_cursor_columns(opts),
-         {:ok, opts} <- decode_cursor(opts, cursor_columns, cursor_mod),
-         query <- apply_sorts(query, opts),
-         {:ok, query} <- apply_where(query, opts),
+         {:ok, opts} <- decode_cursor(opts, cursor_columns, cursor_mod, cursor_config),
+         query <- apply_sorts(query, opts, config),
+         {:ok, query} <- apply_where(query, opts, config),
          query <- limit_plus_one(query, opts) do
       nodes = repo_fun.(query)
 
@@ -340,7 +403,7 @@ defmodule AbsintheRelayKeysetConnection do
 
       nodes = maybe_reverse(nodes, opts)
 
-      edges = build_edges(nodes, cursor_columns, cursor_mod)
+      edges = build_edges(nodes, cursor_columns, cursor_mod, cursor_config)
 
       page_info = get_page_info(opts, edges, more_pages?)
 
@@ -348,21 +411,21 @@ defmodule AbsintheRelayKeysetConnection do
     end
   end
 
-  defp decode_cursor(%{after: encoded_cursor} = opts, cursor_columns, cursor_mod) do
-    case cursor_mod.to_key(encoded_cursor, cursor_columns) do
+  defp decode_cursor(%{after: encoded_cursor} = opts, cursor_columns, cursor_mod, cursor_config) do
+    case cursor_mod.to_key(encoded_cursor, cursor_columns, cursor_config) do
       {:ok, key} -> {:ok, Map.put(opts, :after, key)}
       {:error, msg} -> {:error, msg}
     end
   end
 
-  defp decode_cursor(%{before: encoded_cursor} = opts, cursor_columns, cursor_mod) do
-    case cursor_mod.to_key(encoded_cursor, cursor_columns) do
+  defp decode_cursor(%{before: encoded_cursor} = opts, cursor_columns, cursor_mod, cursor_config) do
+    case cursor_mod.to_key(encoded_cursor, cursor_columns, cursor_config) do
       {:ok, key} -> {:ok, Map.put(opts, :before, key)}
       {:error, msg} -> {:error, msg}
     end
   end
 
-  defp decode_cursor(opts, _cursor_columns, _cursor_mod) do
+  defp decode_cursor(opts, _cursor_columns, _cursor_mod, _cursor_config) do
     {:ok, opts}
   end
 
@@ -440,9 +503,9 @@ defmodule AbsintheRelayKeysetConnection do
       :invalid_cursor_column
   end
 
-  defp build_edges(nodes, cursor_columns, cursor_mod) do
+  defp build_edges(nodes, cursor_columns, cursor_mod, cursor_config) do
     Enum.map(nodes, fn node ->
-      cursor = cursor_mod.from_key(node, cursor_columns)
+      cursor = cursor_mod.from_key(node, cursor_columns, cursor_config)
 
       %{
         node: node,
@@ -451,13 +514,14 @@ defmodule AbsintheRelayKeysetConnection do
     end)
   end
 
-  defp apply_sorts(query, opts) do
+  defp apply_sorts(query, opts, config) do
     # If we want the last 5 records before id 10, ascending, we need to reverse
     # the order of the query to descending and do WHERE id < 10 ORDER BY id
     # DESC LIMIT 5.
     # This gets the correct records, but in the wrong order, so we will have to
     # reverse them later to get them in ascending order.
     flip? = Map.has_key?(opts, :last)
+    null_coalesce = Map.get(config, :null_coalesce, %{})
 
     sorts =
       opts
@@ -480,18 +544,24 @@ defmodule AbsintheRelayKeysetConnection do
     # 4 2021 Banana
     # 2 2021 Apple
     Enum.reduce(sorts, query, fn [{field, dir}], query ->
-      apply_sort(query, field, {dir, flip?})
+      apply_sort(query, field, {dir, flip?}, null_coalesce)
     end)
   end
 
-  defp apply_sort(query, field, dir_and_flip)
+  defp apply_sort(query, field, dir_and_flip, null_coalesce)
        when dir_and_flip in [{:asc, false}, {:desc, true}] do
-    Ecto.Query.order_by(query, [q], asc: field(q, ^field))
+    case Map.get(null_coalesce, field) do
+      nil -> Ecto.Query.order_by(query, [q], asc: field(q, ^field))
+      coalesce_value -> Ecto.Query.order_by(query, [q], asc: coalesce(field(q, ^field), ^coalesce_value))
+    end
   end
 
-  defp apply_sort(query, field, dir_and_flip)
+  defp apply_sort(query, field, dir_and_flip, null_coalesce)
        when dir_and_flip in [{:desc, false}, {:asc, true}] do
-    Ecto.Query.order_by(query, [q], desc: field(q, ^field))
+    case Map.get(null_coalesce, field) do
+      nil -> Ecto.Query.order_by(query, [q], desc: field(q, ^field))
+      coalesce_value -> Ecto.Query.order_by(query, [q], desc: coalesce(field(q, ^field), ^coalesce_value))
+    end
   end
 
   defp limit_plus_one(query, %{first: count}) do
@@ -530,16 +600,17 @@ defmodule AbsintheRelayKeysetConnection do
   defp maybe_reverse(nodes, %{last: _last}), do: Enum.reverse(nodes)
   defp maybe_reverse(nodes, _opts), do: nodes
 
-  defp apply_where(query, %{sorts: sorts} = opts)
+  defp apply_where(query, %{sorts: sorts} = opts, config)
        when is_map_key(opts, :before) or is_map_key(opts, :after) do
     reversed? = Map.has_key?(opts, :before)
     cursor = if reversed?, do: opts.before, else: opts.after
     sorts = sorts |> Enum.flat_map(&Enum.to_list/1) |> Enum.reverse()
+    null_coalesce = Map.get(config, :null_coalesce, %{})
 
-    {:ok, Ecto.Query.where(query, ^do_build_where(nil, sorts, reversed?, cursor))}
+    {:ok, Ecto.Query.where(query, ^do_build_where(nil, sorts, reversed?, cursor, null_coalesce))}
   end
 
-  defp apply_where(query, _opts) do
+  defp apply_where(query, _opts, _config) do
     {:ok, query}
   end
 
@@ -552,39 +623,61 @@ defmodule AbsintheRelayKeysetConnection do
   # We build the where clauses by iterating over the sorts in reverse. The last column is
   # iterated first, and `dynamic` will be nil. This is the only column to not combine with
   # the previous columns' clauses.
-  defp do_build_where(dynamic, sorts, reversed?, cursor)
+  defp do_build_where(dynamic, sorts, reversed?, cursor, null_coalesce)
 
   # This is the first element in sorts, which is the last column to filter on
-  defp do_build_where(nil, [{col_name, col_dir} | sorts], reversed?, cursor) do
+  defp do_build_where(nil, [{col_name, col_dir} | sorts], reversed?, cursor, null_coalesce) do
     column_value = Map.fetch!(cursor, col_name)
 
     dynamic =
       case normalize_direction(col_dir, reversed?) do
-        :asc -> Ecto.Query.dynamic([q], field(q, ^col_name) > ^column_value)
-        :desc -> Ecto.Query.dynamic([q], field(q, ^col_name) < ^column_value)
+        :asc -> build_comparison_dynamic(col_name, column_value, :>, null_coalesce)
+        :desc -> build_comparison_dynamic(col_name, column_value, :<, null_coalesce)
       end
 
     case sorts do
-      [_ | _] -> do_build_where(dynamic, sorts, reversed?, cursor)
+      [_ | _] -> do_build_where(dynamic, sorts, reversed?, cursor, null_coalesce)
       [] -> dynamic
     end
   end
 
-  defp do_build_where(dynamic, [{col_name, col_dir} | sorts], reversed?, cursor) do
+  defp do_build_where(dynamic, [{col_name, col_dir} | sorts], reversed?, cursor, null_coalesce) do
     column_value = Map.fetch!(cursor, col_name)
 
     dir_clause =
       case normalize_direction(col_dir, reversed?) do
-        :asc -> Ecto.Query.dynamic([q], field(q, ^col_name) > ^column_value)
-        :desc -> Ecto.Query.dynamic([q], field(q, ^col_name) < ^column_value)
+        :asc -> build_comparison_dynamic(col_name, column_value, :>, null_coalesce)
+        :desc -> build_comparison_dynamic(col_name, column_value, :<, null_coalesce)
       end
 
+    equal_clause = build_comparison_dynamic(col_name, column_value, :==, null_coalesce)
+
     dynamic =
-      Ecto.Query.dynamic([q], ^dir_clause or (field(q, ^col_name) == ^column_value and ^dynamic))
+      Ecto.Query.dynamic([q], ^dir_clause or (^equal_clause and ^dynamic))
 
     case sorts do
-      [_ | _] -> do_build_where(dynamic, sorts, reversed?, cursor)
+      [_ | _] -> do_build_where(dynamic, sorts, reversed?, cursor, null_coalesce)
       [] -> dynamic
+    end
+  end
+
+  # Build comparison dynamic with coalescing support
+  defp build_comparison_dynamic(col_name, column_value, op, null_coalesce) do
+    case Map.get(null_coalesce, col_name) do
+      nil ->
+        # No coalescing for this column
+        case op do
+          :> -> Ecto.Query.dynamic([q], field(q, ^col_name) > ^column_value)
+          :< -> Ecto.Query.dynamic([q], field(q, ^col_name) < ^column_value)
+          :== -> Ecto.Query.dynamic([q], field(q, ^col_name) == ^column_value)
+        end
+      coalesce_value ->
+        # Use COALESCE for this column
+        case op do
+          :> -> Ecto.Query.dynamic([q], coalesce(field(q, ^col_name), ^coalesce_value) > ^column_value)
+          :< -> Ecto.Query.dynamic([q], coalesce(field(q, ^col_name), ^coalesce_value) < ^column_value)
+          :== -> Ecto.Query.dynamic([q], coalesce(field(q, ^col_name), ^coalesce_value) == ^column_value)
+        end
     end
   end
 

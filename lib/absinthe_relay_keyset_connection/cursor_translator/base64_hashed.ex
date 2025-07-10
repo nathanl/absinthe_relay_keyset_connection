@@ -44,10 +44,17 @@ if Code.ensure_loaded?(Jason) do
         "eo7wn5SRWyJNbyIsMjZd"
     """
     @impl AbsintheRelayKeysetConnection.CursorTranslator
-    def from_key(key_map, cursor_columns) do
+    def from_key(key_map, cursor_columns, config \\ %{}) do
+      null_coalesce = Map.get(config, :null_coalesce, %{})
+
       key =
         Enum.map(cursor_columns, fn column ->
-          Map.fetch!(key_map, column)
+          value = Map.fetch!(key_map, column)
+
+          case value do
+            nil -> Map.get(null_coalesce, column)
+            _ -> value
+          end
         end)
 
       {:ok, json} = Jason.encode(key)
@@ -70,7 +77,7 @@ if Code.ensure_loaded?(Jason) do
         {:ok, %{id: 25}}
     """
     @impl AbsintheRelayKeysetConnection.CursorTranslator
-    def to_key(encoded_cursor, expected_columns) do
+    def to_key(encoded_cursor, expected_columns, _config \\ %{}) do
       with {:ok, <<digest::size(@pad_bits)>> <> @prefix <> json_cursor} <-
              Base.decode64(encoded_cursor),
            true <- valid_digest?(digest, json_cursor),
