@@ -1413,7 +1413,7 @@ defmodule AbsintheRelayKeysetConnectionTest do
       assert names == Enum.sort(names)
     end
 
-    test "reproduces PostgreSQL error with SELECT DISTINCT and null coalescing" do
+    test "works with DISTINCT and null coalescing on base queries" do
       import Ecto.Query
 
       # Insert users with NULL values
@@ -1440,11 +1440,191 @@ defmodule AbsintheRelayKeysetConnectionTest do
                  }
                )
 
-      # The query we end up with:
-      #  SELECT DISTINCT u0."id", u0."first_name", u0."last_name", coalesce(u0."last_name", $1) FROM "users" AS u0 ORDER BY coalesce(u0."last_name", $2), u0."id" LIMIT $3 + 1
-
       # Should return 2 results
       assert length(edges) == 2
+      # Verify we get actual User structs back
+      assert %User{} = hd(edges).node
+    end
+
+    test "throws error for DISTINCT queries with custom select and null coalescing" do
+      import Ecto.Query
+
+      # Insert users with NULL values
+      insert_users([
+        %{id: 1, first_name: "Alice", last_name: nil},
+        %{id: 2, first_name: "Bob", last_name: "Brown"},
+        %{id: 3, first_name: "Charlie", last_name: nil},
+        %{id: 4, first_name: "David", last_name: "Davis"}
+      ])
+
+      # Query with a subset select - only select specific fields
+      query =
+        from(u in User,
+          distinct: true,
+          select: %{id: u.id, first_name: u.first_name, last_name: u.last_name}
+        )
+
+      # This combination is not supported and should return an error
+      assert {:error, msg} =
+               KC.from_query(
+                 query,
+                 &Repo.all/1,
+                 %{
+                   sorts: [%{last_name: :asc}],
+                   first: 3
+                 },
+                 %{
+                   unique_column: :id,
+                   null_coalesce: %{last_name: ""}
+                 }
+               )
+
+      assert msg =~
+               "DISTINCT queries with custom select clauses and null_coalesce are not supported"
+    end
+
+    test "works with DISTINCT and subset selects WITHOUT null coalescing" do
+      import Ecto.Query
+
+      # Insert users without NULL values to avoid coalescing
+      insert_users([
+        %{id: 1, first_name: "Alice", last_name: "Anderson"},
+        %{id: 2, first_name: "Bob", last_name: "Brown"},
+        %{id: 3, first_name: "Charlie", last_name: "Carter"},
+        %{id: 4, first_name: "David", last_name: "Davis"}
+      ])
+
+      # Query with a subset select - only select specific fields
+      query =
+        from(u in User,
+          distinct: true,
+          select: %{id: u.id, first_name: u.first_name, last_name: u.last_name}
+        )
+
+      # This should work fine without null coalescing
+      assert {:ok, %{edges: edges}} =
+               KC.from_query(
+                 query,
+                 &Repo.all/1,
+                 %{
+                   sorts: [%{last_name: :asc}],
+                   first: 3
+                 },
+                 %{unique_column: :id}
+               )
+
+      # Should return 3 results
+      assert length(edges) == 3
+
+      # Verify we get maps back (not User structs) with the selected fields
+      first_node = hd(edges).node
+      assert is_map(first_node)
+      assert Map.has_key?(first_node, :id)
+      assert Map.has_key?(first_node, :first_name)
+      assert Map.has_key?(first_node, :last_name)
+      refute is_struct(first_node)
+
+      # Verify sorting
+      last_names = Enum.map(edges, & &1.node.last_name)
+      assert ["Anderson", "Brown", "Carter"] = last_names
+    end
+
+    test "works with DISTINCT and table name queries without null coalescing" do
+      import Ecto.Query
+
+      # Insert users without NULL values
+      insert_users([
+        %{id: 1, first_name: "Alice", last_name: "Anderson"},
+        %{id: 2, first_name: "Bob", last_name: "Brown"},
+        %{id: 3, first_name: "Charlie", last_name: "Carter"},
+        %{id: 4, first_name: "David", last_name: "Davis"}
+      ])
+
+      # Query using table name instead of module
+      query =
+        from(u in "users",
+          distinct: true,
+          select: %{id: u.id, first_name: u.first_name, last_name: u.last_name}
+        )
+
+      # This should work fine without null coalescing
+      assert {:ok, %{edges: edges}} =
+               KC.from_query(
+                 query,
+                 &Repo.all/1,
+                 %{
+                   sorts: [%{last_name: :asc}],
+                   first: 3
+                 },
+                 %{unique_column: :id}
+               )
+
+      # Should return 3 results
+      assert length(edges) == 3
+
+      # Verify we get maps back with the selected fields
+      first_node = hd(edges).node
+      assert is_map(first_node)
+      assert Map.has_key?(first_node, :id)
+      assert Map.has_key?(first_node, :first_name)
+      assert Map.has_key?(first_node, :last_name)
+
+      # Verify sorting
+      last_names = Enum.map(edges, & &1.node.last_name)
+      assert ["Anderson", "Brown", "Carter"] = last_names
+    end
+
+    test "workaround for DISTINCT + custom select + null coalescing: handle COALESCE manually" do
+      import Ecto.Query
+
+      # Insert users with NULL values
+      insert_users([
+        %{id: 1, first_name: "Alice", last_name: nil},
+        %{id: 2, first_name: "Bob", last_name: "Brown"},
+        %{id: 3, first_name: "Charlie", last_name: nil},
+        %{id: 4, first_name: "David", last_name: "Davis"}
+      ])
+
+      # Workaround: handle COALESCE manually in the query
+      query =
+        from(u in User,
+          distinct: true,
+          select: %{
+            id: u.id,
+            name: u.first_name,
+            last_name_coalesced: coalesce(u.last_name, "")
+          },
+          order_by: [asc: coalesce(u.last_name, ""), asc: u.id]
+        )
+
+      # Don't use null_coalesce config when handling it manually
+      # Also don't specify sorts since we're handling ORDER BY manually in the query
+      assert {:ok, %{edges: edges}} =
+               KC.from_query(
+                 query,
+                 &Repo.all/1,
+                 %{first: 4},
+                 %{unique_column: :id}
+               )
+
+      # Should return 4 results
+      assert length(edges) == 4
+
+      # Verify we get maps back with the manually coalesced field
+      first_node = hd(edges).node
+      assert is_map(first_node)
+      assert Map.has_key?(first_node, :id)
+      assert Map.has_key?(first_node, :name)
+      assert Map.has_key?(first_node, :last_name_coalesced)
+      refute is_struct(first_node)
+
+      # Verify sorting: NULLs (coalesced to "") should come first
+      last_names = Enum.map(edges, & &1.node.last_name_coalesced)
+      assert ["", "", "Brown", "Davis"] = last_names
+
+      # Verify the actual names are in order by id for the "" entries
+      first_two_names = edges |> Enum.take(2) |> Enum.map(& &1.node.name)
+      assert ["Alice", "Charlie"] = first_two_names
     end
   end
 end

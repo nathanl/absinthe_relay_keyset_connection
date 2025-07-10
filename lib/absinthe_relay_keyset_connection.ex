@@ -165,6 +165,69 @@ defmodule AbsintheRelayKeysetConnection do
 
   This ensures consistent, predictable sorting behavior regardless of NULL values in your data.
 
+  ## DISTINCT Query Limitations
+
+  When using DISTINCT queries with null coalescing, there are some limitations due to PostgreSQL's
+  requirement that ORDER BY expressions must appear in the SELECT list for DISTINCT queries.
+
+  ### Supported: DISTINCT + null coalescing (no custom select)
+
+  ```elixir
+  # This works - we can add COALESCE expressions to the SELECT automatically
+  query = from(u in User, distinct: true)
+
+  AbsintheRelayKeysetConnection.from_query(
+    query,
+    &MyRepo.all/1,
+    %{sorts: [%{last_name: :asc}], first: 10},
+    %{unique_column: :id, null_coalesce: %{last_name: ""}}
+  )
+  ```
+
+  ### Not Supported: DISTINCT + custom select + null coalescing
+
+  ```elixir
+  # This will return an error - we cannot modify your custom select clause
+  query = from(u in User,
+    distinct: true,
+    select: %{id: u.id, name: u.first_name}
+  )
+
+  AbsintheRelayKeysetConnection.from_query(
+    query,
+    &MyRepo.all/1,
+    %{sorts: [%{last_name: :asc}], first: 10},
+    %{unique_column: :id, null_coalesce: %{last_name: ""}}
+  )
+  # Returns: {:error, "DISTINCT queries with custom select clauses and null_coalesce are not supported..."}
+  ```
+
+  ### Workaround
+
+  If you need both DISTINCT and custom select with null coalescing, include the COALESCE
+  expressions in your select clause manually:
+
+  ```elixir
+  query = from(u in User,
+    distinct: true,
+    select: %{
+      id: u.id,
+      name: u.first_name,
+      last_name_coalesced: coalesce(u.last_name, "")
+    },
+    order_by: [asc: coalesce(u.last_name, ""), asc: u.id]
+  )
+
+  # Don't use null_coalesce config when you handle it manually
+  # Also don't specify sorts since you're handling ORDER BY manually in the query
+  AbsintheRelayKeysetConnection.from_query(
+    query,
+    &MyRepo.all/1,
+    %{first: 10},
+    %{unique_column: :id}
+  )
+  ```
+
   ## Cautions
 
   There are a few things you can't do with this pagination style.
@@ -393,10 +456,13 @@ defmodule AbsintheRelayKeysetConnection do
          {:ok, opts} <- set_default_sorts(opts, config),
          {:ok, cursor_columns} <- get_cursor_columns(opts),
          {:ok, opts} <- decode_cursor(opts, cursor_columns, cursor_mod, cursor_config),
-         query <- apply_sorts(query, opts, config),
+         {:ok, query} <- apply_sorts(query, opts, config),
          {:ok, query} <- apply_where(query, opts, config),
          query <- limit_plus_one(query, opts) do
-      nodes = repo_fun.(query)
+      results = repo_fun.(query)
+
+      # Extract original records if we used nested select for DISTINCT + coalesce
+      nodes = maybe_extract_records(results, config)
 
       {more_pages?, nodes} = check_for_extra_and_trim(nodes, opts)
 
@@ -407,6 +473,29 @@ defmodule AbsintheRelayKeysetConnection do
       page_info = get_page_info(opts, edges, more_pages?)
 
       {:ok, %{edges: edges, page_info: page_info}}
+    end
+  end
+
+  # Extract original records if we used nested select for DISTINCT + coalesce
+  defp maybe_extract_records(results, config) do
+    null_coalesce = Map.get(config, :null_coalesce, %{})
+
+    # Check if we have nested select results by looking at the data structure
+    # If we used nested select for DISTINCT + coalesce, results will have the pattern:
+    # %{record: %User{...}, __coalesce_field: value}
+    used_nested_select =
+      not Enum.empty?(null_coalesce) and
+        is_list(results) and results != [] and
+        is_map(hd(results)) and Map.has_key?(hd(results), :record)
+
+    if used_nested_select do
+      # We used nested select, extract the original records
+      Enum.map(results, fn result ->
+        Map.get(result, :record)
+      end)
+    else
+      # No nested select was used, return as-is
+      results
     end
   end
 
@@ -513,59 +602,89 @@ defmodule AbsintheRelayKeysetConnection do
     end)
   end
 
-  # When a query has DISTINCT, PostgreSQL requires that all ORDER BY expressions
-  # appear in the SELECT list. This function adds COALESCE expressions to the
-  # SELECT when needed.
-  defp maybe_add_coalesce_to_select(query, sorts, null_coalesce) do
-    if has_distinct?(query) and not Enum.empty?(null_coalesce) do
-      # Get fields that need COALESCE and are used in sorts
-      coalesce_fields =
-        sorts
-        |> List.flatten()
-        |> Enum.map(fn {field, _dir} -> field end)
-        |> Enum.filter(&Map.has_key?(null_coalesce, &1))
+  # Build shared coalesce dynamics and add to SELECT if needed for DISTINCT queries
+  defp build_shared_coalesce_dynamics(query, sorts, null_coalesce) do
+    import Ecto.Query
 
-      # Add COALESCE expressions to the SELECT
-      updated_query = add_coalesce_to_select(query, coalesce_fields, null_coalesce)
-      updated_query
+    coalesce_fields =
+      sorts
+      |> List.flatten()
+      |> Enum.map(fn {field, _dir} -> field end)
+      |> Enum.filter(&Map.has_key?(null_coalesce, &1))
+
+    if has_distinct?(query) and not Enum.empty?(coalesce_fields) do
+      # Check if the query has a custom select clause
+      if query.select do
+        # Query already has a select clause - this combination is not supported
+        {:error,
+         "DISTINCT queries with custom select clauses and null_coalesce are not supported. " <>
+           "PostgreSQL requires ORDER BY expressions to appear in SELECT list for DISTINCT queries, " <>
+           "but we cannot modify your custom select clause. Either remove DISTINCT, remove null_coalesce, " <>
+           "or include the COALESCE expressions in your select clause manually."}
+      else
+        # For DISTINCT queries with coalesce and no existing select, we use selected_as to create aliases
+        # for the COALESCE expressions, which can then be referenced in ORDER BY
+
+        # Create the select map with record + aliased coalesce expressions
+        {select_map, alias_map} =
+          Enum.reduce(coalesce_fields, {%{record: dynamic([q], q)}, %{}}, fn field,
+                                                                             {acc_map,
+                                                                              acc_aliases} ->
+            alias_name = String.to_atom("coalesce_#{field}")
+            coalesce_value = Map.fetch!(null_coalesce, field)
+
+            # Create aliased coalesce expression for SELECT
+            coalesce_expr =
+              dynamic(
+                [q],
+                coalesce(field(q, ^field), ^coalesce_value) |> selected_as(^alias_name)
+              )
+
+            new_map = Map.put(acc_map, alias_name, coalesce_expr)
+
+            # Store the alias name for ORDER BY
+            new_aliases = Map.put(acc_aliases, field, alias_name)
+
+            {new_map, new_aliases}
+          end)
+
+        # Apply the select with aliased expressions
+        updated_query = select(query, ^select_map)
+
+        # Build order_by dynamics using selected_as references
+        order_dynamics =
+          Enum.reduce(coalesce_fields, %{}, fn field, acc ->
+            alias_name = Map.fetch!(alias_map, field)
+            expr = dynamic([q], selected_as(^alias_name))
+            Map.put(acc, field, expr)
+          end)
+
+        {updated_query, order_dynamics, nil}
+      end
     else
-      query
+      # For non-DISTINCT queries, build dynamics normally
+      coalesce_dynamics =
+        Enum.reduce(sorts, %{}, fn [{field, _dir}], acc ->
+          case Map.get(null_coalesce, field) do
+            nil ->
+              acc
+
+            coalesce_value ->
+              expr = dynamic([q], coalesce(field(q, ^field), ^coalesce_value))
+              Map.put(acc, field, expr)
+          end
+        end)
+
+      {query, coalesce_dynamics, nil}
     end
   end
 
   # Check if query has DISTINCT
   defp has_distinct?(%Ecto.Query{distinct: nil}), do: false
-  defp has_distinct?(_query), do: true
-
-  # Add COALESCE expressions to SELECT clause
-  defp add_coalesce_to_select(query, coalesce_fields, null_coalesce) do
-    import Ecto.Query
-
-    case coalesce_fields do
-      [] ->
-        query
-
-      fields ->
-        # Add each coalesce expression to the select using select_merge
-        Enum.reduce(fields, query, fn field, acc_query ->
-          coalesce_value = Map.fetch!(null_coalesce, field)
-          # Use a predictable key that won't conflict with struct fields
-          coalesce_key = String.to_atom("__coalesce_#{field}")
-
-          # Add the COALESCE expression to SELECT using select_merge
-          select_merge(acc_query, [q], %{
-            ^coalesce_key => coalesce(field(q, ^field), ^coalesce_value)
-          })
-        end)
-    end
-  end
+  defp has_distinct?(%Ecto.Query{}), do: true
+  defp has_distinct?(_query), do: false
 
   defp apply_sorts(query, opts, config) do
-    # If we want the last 5 records before id 10, ascending, we need to reverse
-    # the order of the query to descending and do WHERE id < 10 ORDER BY id
-    # DESC LIMIT 5.
-    # This gets the correct records, but in the wrong order, so we will have to
-    # reverse them later to get them in ascending order.
     flip? = Map.has_key?(opts, :last)
     null_coalesce = Map.get(config, :null_coalesce, %{})
 
@@ -574,48 +693,44 @@ defmodule AbsintheRelayKeysetConnection do
       |> Map.fetch!(:sorts)
       |> Enum.map(fn m -> Enum.to_list(m) end)
 
-    # Check if query has DISTINCT - if so, we need to add COALESCE expressions to SELECT
-    query = maybe_add_coalesce_to_select(query, sorts, null_coalesce)
+    # Build shared coalesce dynamics for all coalesced fields
+    case build_shared_coalesce_dynamics(query, sorts, null_coalesce) do
+      {:error, msg} ->
+        {:error, msg}
 
-    # Applies each of the sorts (eg [%{year: :desc}, %{name: :asc}]) in the order
-    # given. To get the opposite ordering, it reverses each of them.
-    # Eg this query: `SELECT * FROM fruits ORDER BY year DESC, name ASC`
-    #
-    # 2 2021 Apple
-    # 4 2021 Banana
-    # 3 2020 Apple
-    # 1 2020 Banana
-    #
-    # Reverses to: `SELECT * FROM fruits ORDER BY year ASC, name DESC`
-    #
-    # 1 2020 Banana
-    # 3 2020 Apple
-    # 4 2021 Banana
-    # 2 2021 Apple
-    Enum.reduce(sorts, query, fn [{field, dir}], query ->
-      apply_sort(query, field, {dir, flip?}, null_coalesce)
-    end)
-  end
-
-  defp apply_sort(query, field, dir_and_flip, null_coalesce)
-       when dir_and_flip in [{:asc, false}, {:desc, true}] do
-    case Map.get(null_coalesce, field) do
-      nil ->
-        Ecto.Query.order_by(query, [q], asc: field(q, ^field))
-
-      coalesce_value ->
-        Ecto.Query.order_by(query, [q], asc: coalesce(field(q, ^field), ^coalesce_value))
+      {query, coalesce_dynamics, _original_select} ->
+        # Continue with normal processing
+        sorted_query = process_sorts(query, sorts, coalesce_dynamics, flip?, null_coalesce)
+        {:ok, sorted_query}
     end
   end
 
-  defp apply_sort(query, field, dir_and_flip, null_coalesce)
+  defp process_sorts(query, sorts, coalesce_dynamics, flip?, null_coalesce) do
+    # Use the shared dynamics in order_by
+    Enum.reduce(sorts, query, fn [{field, dir}], query ->
+      apply_sort(query, field, {dir, flip?}, null_coalesce, coalesce_dynamics)
+    end)
+  end
+
+  defp apply_sort(query, field, dir_and_flip, _null_coalesce, coalesce_dynamics)
+       when dir_and_flip in [{:asc, false}, {:desc, true}] do
+    case Map.get(coalesce_dynamics, field) do
+      nil ->
+        Ecto.Query.order_by(query, [q], asc: field(q, ^field))
+
+      expr ->
+        Ecto.Query.order_by(query, ^[asc: expr])
+    end
+  end
+
+  defp apply_sort(query, field, dir_and_flip, _null_coalesce, coalesce_dynamics)
        when dir_and_flip in [{:desc, false}, {:asc, true}] do
-    case Map.get(null_coalesce, field) do
+    case Map.get(coalesce_dynamics, field) do
       nil ->
         Ecto.Query.order_by(query, [q], desc: field(q, ^field))
 
-      coalesce_value ->
-        Ecto.Query.order_by(query, [q], desc: coalesce(field(q, ^field), ^coalesce_value))
+      expr ->
+        Ecto.Query.order_by(query, ^[desc: expr])
     end
   end
 
