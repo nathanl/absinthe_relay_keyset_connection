@@ -1,5 +1,9 @@
 # CHANGELOG
 
+## v2.1.0 (2025-07-10)
+
+- Add `null_coalesce` option, thanks to @tomasz-tomczyk
+
 ## v2.0.0 (2025-06-21)
 
 - Now requires Elixir v1.15
