@@ -683,6 +683,11 @@ defmodule AbsintheRelayKeysetConnection do
   defp has_distinct?(_query), do: false
 
   defp apply_sorts(query, opts, config) do
+    # If we want the last 5 records before id 10, ascending, we need to reverse
+    # the order of the query to descending and do WHERE id < 10 ORDER BY id
+    # DESC LIMIT 5.
+    # This gets the correct records, but in the wrong order, so we will have to
+    # reverse them later to get them in ascending order.
     flip? = Map.has_key?(opts, :last)
     null_coalesce = Map.get(config, :null_coalesce, %{})
 
@@ -703,6 +708,21 @@ defmodule AbsintheRelayKeysetConnection do
     end
   end
 
+  # Applies each of the sorts (eg [%{year: :desc}, %{name: :asc}]) in the order
+  # given. To get the opposite ordering, it reverses each of them.
+  # Eg this query: `SELECT * FROM fruits ORDER BY year DESC, name ASC`
+  #
+  # 2 2021 Apple
+  # 4 2021 Banana
+  # 3 2020 Apple
+  # 1 2020 Banana
+  #
+  # Reverses to: `SELECT * FROM fruits ORDER BY year ASC, name DESC`
+  #
+  # 1 2020 Banana
+  # 3 2020 Apple
+  # 4 2021 Banana
+  # 2 2021 Apple
   defp process_sorts(query, sorts, coalesce_dynamics, flip?, null_coalesce) do
     # Use the shared dynamics in order_by
     Enum.reduce(sorts, query, fn [{field, dir}], query ->
