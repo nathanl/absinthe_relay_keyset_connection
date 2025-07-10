@@ -604,8 +604,6 @@ defmodule AbsintheRelayKeysetConnection do
 
   # Build shared coalesce dynamics and add to SELECT if needed for DISTINCT queries
   defp build_shared_coalesce_dynamics(query, sorts, null_coalesce) do
-    import Ecto.Query
-
     coalesce_fields =
       sorts
       |> List.flatten()
@@ -627,15 +625,15 @@ defmodule AbsintheRelayKeysetConnection do
 
         # Create the select map with record + aliased coalesce expressions
         {select_map, alias_map} =
-          Enum.reduce(coalesce_fields, {%{record: dynamic([q], q)}, %{}}, fn field,
-                                                                             {acc_map,
-                                                                              acc_aliases} ->
+          Enum.reduce(coalesce_fields, {%{record: Ecto.Query.dynamic([q], q)}, %{}}, fn field,
+                                                                                        {acc_map,
+                                                                                         acc_aliases} ->
             alias_name = String.to_atom("coalesce_#{field}")
             coalesce_value = Map.fetch!(null_coalesce, field)
 
             # Create aliased coalesce expression for SELECT
             coalesce_expr =
-              dynamic(
+              Ecto.Query.dynamic(
                 [q],
                 coalesce(field(q, ^field), ^coalesce_value) |> selected_as(^alias_name)
               )
@@ -649,13 +647,13 @@ defmodule AbsintheRelayKeysetConnection do
           end)
 
         # Apply the select with aliased expressions
-        updated_query = select(query, ^select_map)
+        updated_query = Ecto.Query.select(query, ^select_map)
 
         # Build order_by dynamics using selected_as references
         order_dynamics =
           Enum.reduce(coalesce_fields, %{}, fn field, acc ->
             alias_name = Map.fetch!(alias_map, field)
-            expr = dynamic([q], selected_as(^alias_name))
+            expr = Ecto.Query.dynamic([q], selected_as(^alias_name))
             Map.put(acc, field, expr)
           end)
 
@@ -670,7 +668,7 @@ defmodule AbsintheRelayKeysetConnection do
               acc
 
             coalesce_value ->
-              expr = dynamic([q], coalesce(field(q, ^field), ^coalesce_value))
+              expr = Ecto.Query.dynamic([q], coalesce(field(q, ^field), ^coalesce_value))
               Map.put(acc, field, expr)
           end
         end)
