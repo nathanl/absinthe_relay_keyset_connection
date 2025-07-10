@@ -19,8 +19,7 @@ defmodule AbsintheRelayKeysetConnection do
       after: "0QTwn5SRWyJNbyIsMjZd"
     },
     %{
-      unique_column: :id,
-      null_coalesce: %{name: ""}  # Handle NULL names
+      unique_column: :id
     }
   )
   ```
