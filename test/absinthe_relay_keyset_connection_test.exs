@@ -1265,7 +1265,9 @@ defmodule AbsintheRelayKeysetConnectionTest do
       assert second_page_info.has_previous_page == true
 
       # All 4 users should be retrieved across both pages
-      all_ids = (Enum.map(first_page, & &1.node.id) ++ Enum.map(second_page, & &1.node.id)) |> Enum.sort()
+      all_ids =
+        (Enum.map(first_page, & &1.node.id) ++ Enum.map(second_page, & &1.node.id)) |> Enum.sort()
+
       assert all_ids == [1, 2, 3, 4]
     end
 
@@ -1315,7 +1317,7 @@ defmodule AbsintheRelayKeysetConnectionTest do
 
       assert length(second_page) == 2
       assert Enum.all?(second_page, fn edge -> edge.node.last_name != nil end)
-      
+
       # Should be sorted alphabetically
       last_names = Enum.map(second_page, & &1.node.last_name) |> Enum.sort()
       assert last_names == ["Brown", "Davis"]
@@ -1368,7 +1370,9 @@ defmodule AbsintheRelayKeysetConnectionTest do
       assert first_page_info.has_previous_page == false
 
       # All 4 users should be retrieved across both pages
-      all_ids = (Enum.map(first_page, & &1.node.id) ++ Enum.map(last_page, & &1.node.id)) |> Enum.sort()
+      all_ids =
+        (Enum.map(first_page, & &1.node.id) ++ Enum.map(last_page, & &1.node.id)) |> Enum.sort()
+
       assert all_ids == [1, 2, 3, 4]
     end
 
@@ -1400,10 +1404,11 @@ defmodule AbsintheRelayKeysetConnectionTest do
 
       # Verify sorting order with coalesced values
       # NULL first_name becomes "AAA", NULL last_name becomes "ZZZ"
-      names = Enum.map(edges, fn edge -> 
-        {edge.node.first_name || "AAA", edge.node.last_name || "ZZZ", edge.node.id}
-      end)
-      
+      names =
+        Enum.map(edges, fn edge ->
+          {edge.node.first_name || "AAA", edge.node.last_name || "ZZZ", edge.node.id}
+        end)
+
       # Should be sorted by first_name, then last_name
       assert names == Enum.sort(names)
     end

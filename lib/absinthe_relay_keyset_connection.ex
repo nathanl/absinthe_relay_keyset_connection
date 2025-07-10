@@ -115,7 +115,7 @@ defmodule AbsintheRelayKeysetConnection do
 
   By default, NULL values in sortable columns can cause pagination to fail because
   SQL comparisons with NULL (like `WHERE name > NULL`) are unsafe and forbidden by Ecto.
-  
+
   To handle this, you can use the `:null_coalesce` configuration option to specify
   replacement values for NULL columns during sorting and cursor operations.
 
@@ -551,16 +551,22 @@ defmodule AbsintheRelayKeysetConnection do
   defp apply_sort(query, field, dir_and_flip, null_coalesce)
        when dir_and_flip in [{:asc, false}, {:desc, true}] do
     case Map.get(null_coalesce, field) do
-      nil -> Ecto.Query.order_by(query, [q], asc: field(q, ^field))
-      coalesce_value -> Ecto.Query.order_by(query, [q], asc: coalesce(field(q, ^field), ^coalesce_value))
+      nil ->
+        Ecto.Query.order_by(query, [q], asc: field(q, ^field))
+
+      coalesce_value ->
+        Ecto.Query.order_by(query, [q], asc: coalesce(field(q, ^field), ^coalesce_value))
     end
   end
 
   defp apply_sort(query, field, dir_and_flip, null_coalesce)
        when dir_and_flip in [{:desc, false}, {:asc, true}] do
     case Map.get(null_coalesce, field) do
-      nil -> Ecto.Query.order_by(query, [q], desc: field(q, ^field))
-      coalesce_value -> Ecto.Query.order_by(query, [q], desc: coalesce(field(q, ^field), ^coalesce_value))
+      nil ->
+        Ecto.Query.order_by(query, [q], desc: field(q, ^field))
+
+      coalesce_value ->
+        Ecto.Query.order_by(query, [q], desc: coalesce(field(q, ^field), ^coalesce_value))
     end
   end
 
@@ -671,12 +677,27 @@ defmodule AbsintheRelayKeysetConnection do
           :< -> Ecto.Query.dynamic([q], field(q, ^col_name) < ^column_value)
           :== -> Ecto.Query.dynamic([q], field(q, ^col_name) == ^column_value)
         end
+
       coalesce_value ->
         # Use COALESCE for this column
         case op do
-          :> -> Ecto.Query.dynamic([q], coalesce(field(q, ^col_name), ^coalesce_value) > ^column_value)
-          :< -> Ecto.Query.dynamic([q], coalesce(field(q, ^col_name), ^coalesce_value) < ^column_value)
-          :== -> Ecto.Query.dynamic([q], coalesce(field(q, ^col_name), ^coalesce_value) == ^column_value)
+          :> ->
+            Ecto.Query.dynamic(
+              [q],
+              coalesce(field(q, ^col_name), ^coalesce_value) > ^column_value
+            )
+
+          :< ->
+            Ecto.Query.dynamic(
+              [q],
+              coalesce(field(q, ^col_name), ^coalesce_value) < ^column_value
+            )
+
+          :== ->
+            Ecto.Query.dynamic(
+              [q],
+              coalesce(field(q, ^col_name), ^coalesce_value) == ^column_value
+            )
         end
     end
   end
