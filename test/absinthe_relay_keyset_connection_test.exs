@@ -1176,4 +1176,241 @@ defmodule AbsintheRelayKeysetConnectionTest do
     {^expected_count, nil} = Repo.insert_all(User, data)
     Users.all()
   end
+
+  describe "handling NULL values in sortable columns" do
+    test "crashes when navigating with NULL values without coalescing" do
+      # Insert 4 users where ALL values in the sorted column are NULL
+      insert_users([
+        %{id: 1, first_name: "Alice", last_name: nil},
+        %{id: 2, first_name: "Bob", last_name: nil},
+        %{id: 3, first_name: "Charlie", last_name: nil},
+        %{id: 4, first_name: "David", last_name: nil}
+      ])
+
+      # Get first page - this works
+      assert {:ok, %{edges: first_page, page_info: page_info}} =
+               KC.from_query(
+                 User,
+                 &Repo.all/1,
+                 %{
+                   sorts: [%{last_name: :asc}],
+                   first: 2
+                 },
+                 %{unique_column: :id}
+               )
+
+      assert length(first_page) == 2
+      assert page_info.has_next_page == true
+
+      # Try to navigate to second page - this crashes because cursor contains NULL
+      assert_raise ArgumentError, ~r/comparing.*with.*nil.*is forbidden/, fn ->
+        KC.from_query(
+          User,
+          &Repo.all/1,
+          %{
+            sorts: [%{last_name: :asc}],
+            first: 2,
+            after: page_info.end_cursor
+          },
+          %{unique_column: :id}
+        )
+      end
+    end
+
+    test "works correctly with NULL values when using null coalescing" do
+      # Insert 4 users where ALL values in the sorted column are NULL
+      insert_users([
+        %{id: 1, first_name: "Alice", last_name: nil},
+        %{id: 2, first_name: "Bob", last_name: nil},
+        %{id: 3, first_name: "Charlie", last_name: nil},
+        %{id: 4, first_name: "David", last_name: nil}
+      ])
+
+      # Get first page with coalescing - this works
+      assert {:ok, %{edges: first_page, page_info: page_info}} =
+               KC.from_query(
+                 User,
+                 &Repo.all/1,
+                 %{
+                   sorts: [%{last_name: :asc}],
+                   first: 2
+                 },
+                 %{
+                   unique_column: :id,
+                   null_coalesce: %{last_name: ""}
+                 }
+               )
+
+      assert length(first_page) == 2
+      assert page_info.has_next_page == true
+
+      # Navigate to second page - this now works without crashing
+      assert {:ok, %{edges: second_page, page_info: second_page_info}} =
+               KC.from_query(
+                 User,
+                 &Repo.all/1,
+                 %{
+                   sorts: [%{last_name: :asc}],
+                   first: 2,
+                   after: page_info.end_cursor
+                 },
+                 %{
+                   unique_column: :id,
+                   null_coalesce: %{last_name: ""}
+                 }
+               )
+
+      assert length(second_page) == 2
+      assert second_page_info.has_next_page == false
+      assert second_page_info.has_previous_page == true
+
+      # All 4 users should be retrieved across both pages
+      all_ids =
+        (Enum.map(first_page, & &1.node.id) ++ Enum.map(second_page, & &1.node.id)) |> Enum.sort()
+
+      assert all_ids == [1, 2, 3, 4]
+    end
+
+    test "handles mixed NULL and non-NULL values with coalescing" do
+      # Insert users with mixed NULL and non-NULL values
+      insert_users([
+        %{id: 1, first_name: "Alice", last_name: nil},
+        %{id: 2, first_name: "Bob", last_name: "Brown"},
+        %{id: 3, first_name: "Charlie", last_name: nil},
+        %{id: 4, first_name: "David", last_name: "Davis"}
+      ])
+
+      # With coalescing, NULL values should be sorted as empty strings (first in ASC order)
+      assert {:ok, %{edges: first_page, page_info: page_info}} =
+               KC.from_query(
+                 User,
+                 &Repo.all/1,
+                 %{
+                   sorts: [%{last_name: :asc}],
+                   first: 2
+                 },
+                 %{
+                   unique_column: :id,
+                   null_coalesce: %{last_name: ""}
+                 }
+               )
+
+      # First page should have the NULL values (coalesced to "") which come first
+      assert length(first_page) == 2
+      assert Enum.all?(first_page, fn edge -> edge.node.last_name == nil end)
+
+      # Second page should have the non-NULL values
+      assert {:ok, %{edges: second_page}} =
+               KC.from_query(
+                 User,
+                 &Repo.all/1,
+                 %{
+                   sorts: [%{last_name: :asc}],
+                   first: 2,
+                   after: page_info.end_cursor
+                 },
+                 %{
+                   unique_column: :id,
+                   null_coalesce: %{last_name: ""}
+                 }
+               )
+
+      assert length(second_page) == 2
+      assert Enum.all?(second_page, fn edge -> edge.node.last_name != nil end)
+
+      # Should be sorted alphabetically
+      last_names = Enum.map(second_page, & &1.node.last_name) |> Enum.sort()
+      assert last_names == ["Brown", "Davis"]
+    end
+
+    test "supports backward pagination with NULL values and coalescing" do
+      # Insert 4 users with NULL values
+      insert_users([
+        %{id: 1, first_name: "Alice", last_name: nil},
+        %{id: 2, first_name: "Bob", last_name: nil},
+        %{id: 3, first_name: "Charlie", last_name: nil},
+        %{id: 4, first_name: "David", last_name: nil}
+      ])
+
+      # Get last 2 records
+      assert {:ok, %{edges: last_page, page_info: page_info}} =
+               KC.from_query(
+                 User,
+                 &Repo.all/1,
+                 %{
+                   sorts: [%{last_name: :asc}],
+                   last: 2
+                 },
+                 %{
+                   unique_column: :id,
+                   null_coalesce: %{last_name: ""}
+                 }
+               )
+
+      assert length(last_page) == 2
+      assert page_info.has_previous_page == true
+
+      # Navigate backward to first 2 records
+      assert {:ok, %{edges: first_page, page_info: first_page_info}} =
+               KC.from_query(
+                 User,
+                 &Repo.all/1,
+                 %{
+                   sorts: [%{last_name: :asc}],
+                   last: 2,
+                   before: page_info.start_cursor
+                 },
+                 %{
+                   unique_column: :id,
+                   null_coalesce: %{last_name: ""}
+                 }
+               )
+
+      assert length(first_page) == 2
+      assert first_page_info.has_previous_page == false
+
+      # All 4 users should be retrieved across both pages
+      all_ids =
+        (Enum.map(first_page, & &1.node.id) ++ Enum.map(last_page, & &1.node.id)) |> Enum.sort()
+
+      assert all_ids == [1, 2, 3, 4]
+    end
+
+    test "supports multiple columns with different coalesce values" do
+      # Insert users with NULLs in different columns
+      insert_users([
+        %{id: 1, first_name: nil, last_name: nil},
+        %{id: 2, first_name: "Bob", last_name: nil},
+        %{id: 3, first_name: nil, last_name: "Charlie"},
+        %{id: 4, first_name: "David", last_name: "Davis"}
+      ])
+
+      # Use different coalesce values for different columns
+      assert {:ok, %{edges: edges}} =
+               KC.from_query(
+                 User,
+                 &Repo.all/1,
+                 %{
+                   sorts: [%{first_name: :asc}, %{last_name: :asc}],
+                   first: 4
+                 },
+                 %{
+                   unique_column: :id,
+                   null_coalesce: %{first_name: "AAA", last_name: "ZZZ"}
+                 }
+               )
+
+      assert length(edges) == 4
+
+      # Verify sorting order with coalesced values
+      # NULL first_name becomes "AAA", NULL last_name becomes "ZZZ"
+      names =
+        Enum.map(edges, fn edge ->
+          {edge.node.first_name || "AAA", edge.node.last_name || "ZZZ", edge.node.id}
+        end)
+
+      # Should be sorted by first_name, then last_name
+      assert names == Enum.sort(names)
+    end
+  end
 end
