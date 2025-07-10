@@ -513,6 +513,53 @@ defmodule AbsintheRelayKeysetConnection do
     end)
   end
 
+  # When a query has DISTINCT and a custom SELECT, PostgreSQL requires that all ORDER BY expressions
+  # appear in the SELECT list. This function adds COALESCE expressions to the SELECT when needed.
+  defp maybe_add_coalesce_to_select(query, sorts, null_coalesce) do
+    # Check if query has DISTINCT and custom SELECT
+    if has_distinct_and_select?(query) and not Enum.empty?(null_coalesce) do
+      # Get fields that need COALESCE and are used in sorts
+      coalesce_fields =
+        sorts
+        |> List.flatten()
+        |> Enum.map(fn {field, _dir} -> field end)
+        |> Enum.filter(&Map.has_key?(null_coalesce, &1))
+
+      # Add COALESCE expressions to the SELECT
+      updated_query = add_coalesce_to_select(query, coalesce_fields, null_coalesce)
+      updated_query
+    else
+      query
+    end
+  end
+
+  # Check if query has DISTINCT
+  defp has_distinct_and_select?(%Ecto.Query{distinct: nil}), do: false
+  defp has_distinct_and_select?(_query), do: true
+
+  # Add COALESCE expressions to SELECT clause
+  defp add_coalesce_to_select(query, coalesce_fields, null_coalesce) do
+    import Ecto.Query
+
+    case coalesce_fields do
+      [] ->
+        query
+
+      fields ->
+        # Add each coalesce expression to the select using select_merge
+        Enum.reduce(fields, query, fn field, acc_query ->
+          coalesce_value = Map.fetch!(null_coalesce, field)
+          # Use a predictable key that won't conflict with struct fields
+          coalesce_key = String.to_atom("__coalesce_#{field}")
+
+          # Add the COALESCE expression to SELECT using select_merge
+          select_merge(acc_query, [q], %{
+            ^coalesce_key => coalesce(field(q, ^field), ^coalesce_value)
+          })
+        end)
+    end
+  end
+
   defp apply_sorts(query, opts, config) do
     # If we want the last 5 records before id 10, ascending, we need to reverse
     # the order of the query to descending and do WHERE id < 10 ORDER BY id
@@ -526,6 +573,9 @@ defmodule AbsintheRelayKeysetConnection do
       opts
       |> Map.fetch!(:sorts)
       |> Enum.map(fn m -> Enum.to_list(m) end)
+
+    # Check if query has DISTINCT and custom SELECT - if so, we need to add COALESCE expressions to SELECT
+    query = maybe_add_coalesce_to_select(query, sorts, null_coalesce)
 
     # Applies each of the sorts (eg [%{year: :desc}, %{name: :asc}]) in the order
     # given. To get the opposite ordering, it reverses each of them.
@@ -554,6 +604,7 @@ defmodule AbsintheRelayKeysetConnection do
         Ecto.Query.order_by(query, [q], asc: field(q, ^field))
 
       coalesce_value ->
+        # Always use the same COALESCE expression for both DISTINCT and non-DISTINCT queries
         Ecto.Query.order_by(query, [q], asc: coalesce(field(q, ^field), ^coalesce_value))
     end
   end
@@ -565,6 +616,7 @@ defmodule AbsintheRelayKeysetConnection do
         Ecto.Query.order_by(query, [q], desc: field(q, ^field))
 
       coalesce_value ->
+        # Always use the same COALESCE expression for both DISTINCT and non-DISTINCT queries
         Ecto.Query.order_by(query, [q], desc: coalesce(field(q, ^field), ^coalesce_value))
     end
   end

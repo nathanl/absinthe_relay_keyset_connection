@@ -1412,5 +1412,39 @@ defmodule AbsintheRelayKeysetConnectionTest do
       # Should be sorted by first_name, then last_name
       assert names == Enum.sort(names)
     end
+
+    test "reproduces PostgreSQL error with SELECT DISTINCT and null coalescing" do
+      import Ecto.Query
+
+      # Insert users with NULL values
+      insert_users([
+        %{id: 1, first_name: "Alice", last_name: nil},
+        %{id: 2, first_name: "Bob", last_name: nil},
+        %{id: 3, first_name: "Charlie", last_name: nil},
+        %{id: 4, first_name: "David", last_name: nil}
+      ])
+
+      query = from(u in User, distinct: true)
+
+      assert {:ok, %{edges: edges}} =
+               KC.from_query(
+                 query,
+                 &Repo.all/1,
+                 %{
+                   sorts: [%{last_name: :asc}],
+                   first: 2
+                 },
+                 %{
+                   unique_column: :id,
+                   null_coalesce: %{last_name: ""}
+                 }
+               )
+
+      # The query we end up with:
+      #  SELECT DISTINCT u0."id", u0."first_name", u0."last_name", coalesce(u0."last_name", $1) FROM "users" AS u0 ORDER BY coalesce(u0."last_name", $2), u0."id" LIMIT $3 + 1
+
+      # Should return 2 results
+      assert length(edges) == 2
+    end
   end
 end
