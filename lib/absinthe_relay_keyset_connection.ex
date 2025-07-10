@@ -165,7 +165,7 @@ defmodule AbsintheRelayKeysetConnection do
 
   This ensures consistent, predictable sorting behavior regardless of NULL values in your data.
 
-  ### Cautions
+  ## Cautions
 
   There are a few things you can't do with this pagination style.
 
