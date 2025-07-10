@@ -513,11 +513,11 @@ defmodule AbsintheRelayKeysetConnection do
     end)
   end
 
-  # When a query has DISTINCT and a custom SELECT, PostgreSQL requires that all ORDER BY expressions
-  # appear in the SELECT list. This function adds COALESCE expressions to the SELECT when needed.
+  # When a query has DISTINCT, PostgreSQL requires that all ORDER BY expressions
+  # appear in the SELECT list. This function adds COALESCE expressions to the
+  # SELECT when needed.
   defp maybe_add_coalesce_to_select(query, sorts, null_coalesce) do
-    # Check if query has DISTINCT and custom SELECT
-    if has_distinct_and_select?(query) and not Enum.empty?(null_coalesce) do
+    if has_distinct?(query) and not Enum.empty?(null_coalesce) do
       # Get fields that need COALESCE and are used in sorts
       coalesce_fields =
         sorts
@@ -534,8 +534,8 @@ defmodule AbsintheRelayKeysetConnection do
   end
 
   # Check if query has DISTINCT
-  defp has_distinct_and_select?(%Ecto.Query{distinct: nil}), do: false
-  defp has_distinct_and_select?(_query), do: true
+  defp has_distinct?(%Ecto.Query{distinct: nil}), do: false
+  defp has_distinct?(_query), do: true
 
   # Add COALESCE expressions to SELECT clause
   defp add_coalesce_to_select(query, coalesce_fields, null_coalesce) do
@@ -574,7 +574,7 @@ defmodule AbsintheRelayKeysetConnection do
       |> Map.fetch!(:sorts)
       |> Enum.map(fn m -> Enum.to_list(m) end)
 
-    # Check if query has DISTINCT and custom SELECT - if so, we need to add COALESCE expressions to SELECT
+    # Check if query has DISTINCT - if so, we need to add COALESCE expressions to SELECT
     query = maybe_add_coalesce_to_select(query, sorts, null_coalesce)
 
     # Applies each of the sorts (eg [%{year: :desc}, %{name: :asc}]) in the order
@@ -604,7 +604,6 @@ defmodule AbsintheRelayKeysetConnection do
         Ecto.Query.order_by(query, [q], asc: field(q, ^field))
 
       coalesce_value ->
-        # Always use the same COALESCE expression for both DISTINCT and non-DISTINCT queries
         Ecto.Query.order_by(query, [q], asc: coalesce(field(q, ^field), ^coalesce_value))
     end
   end
@@ -616,7 +615,6 @@ defmodule AbsintheRelayKeysetConnection do
         Ecto.Query.order_by(query, [q], desc: field(q, ^field))
 
       coalesce_value ->
-        # Always use the same COALESCE expression for both DISTINCT and non-DISTINCT queries
         Ecto.Query.order_by(query, [q], desc: coalesce(field(q, ^field), ^coalesce_value))
     end
   end
