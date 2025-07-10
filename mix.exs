@@ -4,7 +4,7 @@ defmodule AbsintheRelayKeysetConnection.MixProject do
   def project do
     [
       app: :absinthe_relay_keyset_connection,
-      version: "2.0.0",
+      version: "2.1.0",
       elixir: "~> 1.15",
       start_permanent: Mix.env() == :prod,
       elixirc_paths: elixirc_paths(Mix.env()),
