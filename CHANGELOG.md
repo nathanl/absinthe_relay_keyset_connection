@@ -1,5 +1,9 @@
 # CHANGELOG
 
+## v2.1.1 (2025-07-10)
+
+- Account for edge cases with `null_coalesce` and `distinct` queries
+
 ## v2.1.0 (2025-07-10)
 
 - Add `null_coalesce` option, thanks to @tomasz-tomczyk
