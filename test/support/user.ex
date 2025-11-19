@@ -8,5 +8,6 @@ defmodule AbsintheRelayKeysetConnection.User do
   schema "users" do
     field(:first_name, :string)
     field(:last_name, :string)
+    field(:date_of_birth, :date)
   end
 end

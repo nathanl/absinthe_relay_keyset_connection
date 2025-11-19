@@ -33,11 +33,11 @@ defmodule AbsintheRelayKeysetConnection.CursorTranslator.Base64HashedTest do
     test "with Date type in null_coalesce config" do
       # When using null_coalesce with Date structs, the decoded cursor should
       # return Date structs, not ISO8601 strings
-      columns = [:due_date, :id]
+      columns = [:date_of_birth, :id]
 
-      # Simulate a NULL date being coalesced to a default date
-      raw = %{due_date: nil, id: 1}
-      config = %{null_coalesce: %{due_date: ~D[0001-01-01]}}
+      # Simulate a NULL date_of_birth being coalesced to a default date
+      raw = %{date_of_birth: nil, id: 1}
+      config = %{null_coalesce: %{date_of_birth: ~D[0001-01-01]}}
 
       # When encoding, the nil date gets replaced with the default Date struct
       encoded = Base64Hashed.from_key(raw, columns, config)
@@ -45,9 +45,9 @@ defmodule AbsintheRelayKeysetConnection.CursorTranslator.Base64HashedTest do
       # When decoding, the Date should be properly converted back from JSON string
       {:ok, decoded} = Base64Hashed.to_key(encoded, columns, config)
 
-      # The decoded due_date should be a Date struct, not a string
-      assert decoded.due_date == ~D[0001-01-01]
-      assert %Date{} = decoded.due_date
+      # The decoded date_of_birth should be a Date struct, not a string
+      assert decoded.date_of_birth == ~D[0001-01-01]
+      assert %Date{} = decoded.date_of_birth
       assert decoded.id == 1
     end
 
