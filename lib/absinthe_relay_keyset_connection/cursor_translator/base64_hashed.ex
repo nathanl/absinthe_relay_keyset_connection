@@ -77,7 +77,9 @@ if Code.ensure_loaded?(Jason) do
         {:ok, %{id: 25}}
     """
     @impl AbsintheRelayKeysetConnection.CursorTranslator
-    def to_key(encoded_cursor, expected_columns, _config \\ %{}) do
+    def to_key(encoded_cursor, expected_columns, config \\ %{}) do
+      null_coalesce = Map.get(config, :null_coalesce, %{})
+
       with {:ok, <<digest::size(@pad_bits)>> <> @prefix <> json_cursor} <-
              Base.decode64(encoded_cursor),
            true <- valid_digest?(digest, json_cursor),
@@ -86,6 +88,11 @@ if Code.ensure_loaded?(Jason) do
         key =
           expected_columns
           |> Enum.zip(decoded_list)
+          |> Enum.map(fn {column, value} ->
+            # Convert decoded values back to proper types based on null_coalesce config
+            typed_value = decode_value_type(value, column, null_coalesce)
+            {column, typed_value}
+          end)
           |> Map.new()
 
         {:ok, key}
@@ -95,6 +102,33 @@ if Code.ensure_loaded?(Jason) do
     rescue
       ArgumentError ->
         {:error, :invalid_cursor}
+    end
+
+    # Convert JSON-decoded string values back to their proper Elixir types
+    # based on the type of the null_coalesce value for that column
+    defp decode_value_type(value, column, null_coalesce) do
+      case Map.get(null_coalesce, column) do
+        %Date{} when is_binary(value) ->
+          case Date.from_iso8601(value) do
+            {:ok, date} -> date
+            _ -> value
+          end
+
+        %NaiveDateTime{} when is_binary(value) ->
+          case NaiveDateTime.from_iso8601(value) do
+            {:ok, datetime} -> datetime
+            _ -> value
+          end
+
+        %DateTime{} when is_binary(value) ->
+          case DateTime.from_iso8601(value) do
+            {:ok, datetime, _} -> datetime
+            _ -> value
+          end
+
+        _ ->
+          value
+      end
     end
 
     # Since we built the padding from a hash of the original contents of the
