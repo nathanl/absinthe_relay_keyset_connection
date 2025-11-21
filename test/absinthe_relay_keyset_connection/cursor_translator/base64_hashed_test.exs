@@ -29,5 +29,39 @@ defmodule AbsintheRelayKeysetConnection.CursorTranslator.Base64HashedTest do
       expected_columns = [:last_name, :first_name, :id]
       {:error, :invalid_cursor} = Base64Hashed.to_key(encoded, expected_columns)
     end
+
+    test "with Date type in null_coalesce config" do
+      # When using null_coalesce with Date structs, the decoded cursor should
+      # return Date structs, not ISO8601 strings
+      columns = [:date_of_birth, :id]
+
+      # Simulate a NULL date_of_birth being coalesced to a default date
+      raw = %{date_of_birth: nil, id: 1}
+      config = %{null_coalesce: %{date_of_birth: ~D[0001-01-01]}}
+
+      # When encoding, the nil date gets replaced with the default Date struct
+      encoded = Base64Hashed.from_key(raw, columns, config)
+
+      # When decoding, the Date should be properly converted back from JSON string
+      {:ok, decoded} = Base64Hashed.to_key(encoded, columns, config)
+
+      # The decoded date_of_birth should be a Date struct, not a string
+      assert decoded.date_of_birth == ~D[0001-01-01]
+      assert %Date{} = decoded.date_of_birth
+      assert decoded.id == 1
+    end
+
+    test "with NaiveDateTime type in null_coalesce config" do
+      columns = [:updated_at, :id]
+      raw = %{updated_at: nil, id: 1}
+      config = %{null_coalesce: %{updated_at: ~N[0001-01-01 00:00:00]}}
+
+      encoded = Base64Hashed.from_key(raw, columns, config)
+      {:ok, decoded} = Base64Hashed.to_key(encoded, columns, config)
+
+      assert decoded.updated_at == ~N[0001-01-01 00:00:00]
+      assert %NaiveDateTime{} = decoded.updated_at
+      assert decoded.id == 1
+    end
   end
 end

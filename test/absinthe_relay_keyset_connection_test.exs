@@ -1413,6 +1413,60 @@ defmodule AbsintheRelayKeysetConnectionTest do
       assert names == Enum.sort(names)
     end
 
+    test "works with Date type in null_coalesce during pagination" do
+      # Regression test for: "Postgrex expected %Date{}, got '0001-01-01'"
+      # This tests the complete flow with nullable Date column
+      insert_users([
+        %{id: 1, first_name: "Alice", last_name: "Anderson", date_of_birth: nil},
+        %{id: 2, first_name: "Bob", last_name: "Brown", date_of_birth: ~D[1990-01-15]},
+        %{id: 3, first_name: "Charlie", last_name: "Carter", date_of_birth: nil},
+        %{id: 4, first_name: "David", last_name: "Davis", date_of_birth: ~D[1985-05-20]}
+      ])
+
+      config = %{
+        unique_column: :id,
+        null_coalesce: %{date_of_birth: ~D[0001-01-01]}
+      }
+
+      # First page - no cursor, should work
+      assert {:ok, %{edges: first_page, page_info: page_info}} =
+               KC.from_query(
+                 User,
+                 &Repo.all/1,
+                 %{
+                   sorts: [%{date_of_birth: :asc}],
+                   first: 2
+                 },
+                 config
+               )
+
+      assert length(first_page) == 2
+      assert page_info.has_next_page == true
+
+      # Second page with cursor - this would fail without the fix
+      # The cursor contains Date values that must be decoded correctly
+      assert {:ok, %{edges: second_page}} =
+               KC.from_query(
+                 User,
+                 &Repo.all/1,
+                 %{
+                   sorts: [%{date_of_birth: :asc}],
+                   first: 2,
+                   after: page_info.end_cursor
+                 },
+                 config
+               )
+
+      assert length(second_page) == 2
+
+      # Verify all 4 users retrieved
+      all_ids =
+        (Enum.map(first_page, & &1.node.id) ++ Enum.map(second_page, & &1.node.id))
+        |> Enum.sort()
+
+      assert all_ids == [1, 2, 3, 4]
+    end
+
     test "works with DISTINCT and null coalescing on base queries" do
       import Ecto.Query
 
