@@ -1,5 +1,9 @@
 # CHANGELOG
 
+## v2.1.2 (2025-11-21)
+
+- Fix Date/DateTime type handling in cursor decoding
+
 ## v2.1.1 (2025-07-10)
 
 - Account for edge cases with `null_coalesce` and `distinct` queries

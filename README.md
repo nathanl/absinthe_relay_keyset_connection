@@ -15,7 +15,7 @@ Add to to your list of dependencies in `mix.exs`:
 ```elixir
 def deps do
   [
-    {:absinthe_relay_keyset_connection, "~> 2.0"}
+    {:absinthe_relay_keyset_connection, "~> 2.1"}
   ]
 end
 ```
